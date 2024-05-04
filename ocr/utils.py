@@ -83,9 +83,9 @@ async def vision_ocr(ctx: Context, *, image: str | bytes, detect_handwriting: bo
             if resp.status != 200:
                 try:
                     data: dict = await resp.json()
-                except Exception:
+                except Exception as error:
                     if not ctx.interaction:
-                        await ctx.send(f"https://http.cat/{resp.status}")
+                        await ctx.send(f"{error} https://http.cat/{resp.status}")
                     return None
                 else:
                     p = dacite.from_dict(data_class=VisionPayload, data=data)
@@ -95,13 +95,13 @@ async def vision_ocr(ctx: Context, *, image: str | bytes, detect_handwriting: bo
             data: dict = await resp.json()
     except Exception as exc:
         if not ctx.interaction:
-            await ctx.send("Operation timed out.", ephemeral=True)
+            await ctx.send(f"Operation timed out: {exc}", ephemeral=True)
         return None
 
     output: list[dict[str, Any]] = data.get("responses", [])
     if not output or not output[0]:
         if not ctx.interaction:
-            await ctx.send("No text detected.")
+            await ctx.send("No text was detected or extracted from that image.")
         return None
     obj = dacite.from_dict(data_class=VisionPayload, data=data["responses"][0])
     if obj.error and obj.error.message:
