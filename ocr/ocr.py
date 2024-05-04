@@ -8,20 +8,27 @@ from redbot.core import commands
 from redbot.core.utils.chat_formatting import box, pagify, pprint, text_to_file
 
 from .converter import ImageFinder, find_images_in_replies, search_for_images
+from .iso639 import ISO639_MAP
 from .utils import vision_ocr as do_vision_ocr
+
+try:
+    from translate.models import DetectedLanguage
+    HAS_TRANSLATE_COG = True
+except (ImportError, ModuleNotFoundError):
+    HAS_TRANSLATE_COG = False
 
 if TYPE_CHECKING:
     from redbot.core.commands import Context
     from redbot.core.bot import Red
 
-LOGGER = logging.getLogger("ocr.ocr")
+logger = logging.getLogger("ocr.ocr")
 
 
 class OCR(commands.Cog):
     """Detect text in images using ocr.space or Google Cloud Vision API."""
 
     __authors__ = ["<@306810730055729152>", "TrustyJAID"]
-    __version__ = "2.3.2"
+    __version__ = "2.4.0"
 
     def format_help_for_context(self, ctx: Context) -> str:
         """Thanks Sinbad."""
@@ -37,10 +44,11 @@ class OCR(commands.Cog):
             name="Run OCR",
             callback=self.ocr_ctx_menu,
         )
-        self.ocr_translate_ctx = discord.app_commands.ContextMenu(
-            name="OCR + Translate",
-            callback=self.ocr_translate_ctx_menu,
-        )
+        if bot.get_cog("Translate"):
+            self.ocr_translate_ctx = discord.app_commands.ContextMenu(
+                name="OCR + Translate",
+                callback=self.ocr_translate_ctx_menu,
+            )
 
     async def cog_load(self) -> None:
         self.bot.tree.add_command(self.ocr_ctx)
@@ -58,7 +66,7 @@ class OCR(commands.Cog):
 
     @staticmethod
     async def _pre_processing(inter: discord.Interaction[Red], message: discord.Message) -> str | None:
-        LOGGER.debug(
+        logger.debug(
             "%s (%s) used OCR ctx menu in %r in guild: %r (%s)",
             inter.user.name,
             inter.user.id,
@@ -73,7 +81,7 @@ class OCR(commands.Cog):
                 ephemeral=True,
             )
             return discord.utils.MISSING
-        LOGGER.debug("\n".join(images))
+        logger.debug("\n".join(images))
         ctx = await commands.Context.from_interaction(inter)
         r = await do_vision_ocr(ctx, detect_handwriting=True, image=images[0])
         if not r:
@@ -82,6 +90,8 @@ class OCR(commands.Cog):
         return r.text_value
 
     async def ocr_ctx_menu(self, i: discord.Interaction[Red], message: discord.Message) -> None:
+        if not i.client.get_cog("Translate"):
+            return
         hidden = True if message.guild else not i.app_permissions.send_messages
         if message.author.system or message.author.bot:
             hidden = False
@@ -121,11 +131,6 @@ class OCR(commands.Cog):
         if not cog:
             await i.followup.send("Translate module not found wtf", ephemeral=True)
             return
-        if TYPE_CHECKING:
-            from translate.translate import Translate
-            assert isinstance(cog, Translate)
-
-        from translate.models import DetectedLanguage
 
         detected_lang = DetectedLanguage(language="auto", confidence=0)
         try:
@@ -134,7 +139,7 @@ class OCR(commands.Cog):
             from_lang = "auto"
         else:
             from_lang = detected_lang.language
-        translated_text = await cog.run_translate(i, from_lang, "en", text_value)
+        translated_text = await self.run_translate(cog, i, from_lang, "en", text_value)
         if not translated_text:
             if len(text_value) > 1984:
                 await i.followup.send(file=text_to_file(text_value), ephemeral=True)
@@ -145,6 +150,27 @@ class OCR(commands.Cog):
         _, embed = translated_text.embed(user, from_lang, "en", user, detected_lang.confidence)
         await i.followup.send(embed=embed, ephemeral=True)
         return
+
+    @staticmethod
+    async def run_translate(
+        cog, ctx: Context[Red] | discord.Interaction[Red], from_lang: str, to_language: str, text: str
+    ):
+        send = ctx.followup.send if isinstance(ctx, discord.Interaction) else ctx.send
+        if str(to_language) == from_lang:
+            ln_from = ISO639_MAP.get(from_lang) or from_lang.upper()
+            ln_to = ISO639_MAP.get(to_language) or to_language.upper()
+            await send(f"⚠️ I cannot translate `{ln_from}` to `{ln_to}`! Same language!?")
+            return None
+        try:
+            translated_text = await cog._tr.translate_text(to_language, text, from_lang, guild=ctx.guild)
+        except Exception as exc:
+            await send(str(exc))
+            return None
+        if translated_text is None:
+            await send("Google said there is nothing to be translated /shrug")
+            return None
+        else:
+            return translated_text
 
     @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.bot_has_permissions(read_message_history=True)
@@ -218,10 +244,7 @@ class OCR(commands.Cog):
             return
         if TYPE_CHECKING:
             from translate.translate import Translate
-
             assert isinstance(cog, Translate)
-
-        from translate.models import DetectedLanguage
 
         detected_lang = DetectedLanguage(language="auto", confidence=0)
         try:
@@ -231,7 +254,7 @@ class OCR(commands.Cog):
             from_lang = ft.language_code if (ft := resp.fullTextAnnotation) else "auto"
         else:
             from_lang = detected_lang.language
-        translated_text = await cog.run_translate(ctx, from_lang, "en", text)
+        translated_text = await self.run_translate(cog, ctx, from_lang, "en", text)
         if not translated_text:
             await ctx.send_interactive(pagify(text), box_lang="", timeout=120)
             return
