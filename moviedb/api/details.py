@@ -3,11 +3,9 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import aiohttp
 import dacite
-from dateutil.parser import isoparse
 from discord.utils import utcnow
 from redbot.core.utils.chat_formatting import humanize_number
 
@@ -21,6 +19,9 @@ from .base import (
 )
 from ..constants import API_BASE
 from ..utils import format_date
+
+if TYPE_CHECKING:
+    import aiohttp
 
 
 @dataclass(slots=True)
@@ -86,12 +87,8 @@ class MovieDetails:
         genres = [Genre(**g) for g in data.pop("genres", [])]
         credits = [CelebrityCast(**c) for c in data.pop("credits", {}).get("cast", [])]
         spoken_languages = [Language(**sl) for sl in data.pop("spoken_languages", [])]
-        production_companies = [
-            ProductionCompany(**p) for p in data.pop("production_companies", [])
-        ]
-        production_countries = [
-            ProductionCountry(**pc) for pc in data.pop("production_countries", [])
-        ]
+        production_companies = [ProductionCompany(**p) for p in data.pop("production_companies", [])]
+        production_countries = [ProductionCountry(**pc) for pc in data.pop("production_countries", [])]
         return cls(
             genres=genres,
             credits=credits,
@@ -102,9 +99,7 @@ class MovieDetails:
         )
 
     @classmethod
-    async def request(
-        cls, session: aiohttp.ClientSession, api_key: str, movie_id: Any
-    ) -> MediaNotFound | MovieDetails:
+    async def request(cls, session: aiohttp.ClientSession, api_key: str, movie_id: Any) -> MediaNotFound | MovieDetails:
         movie_data = {}
         params = {"api_key": api_key, "append_to_response": "credits"}
         try:
@@ -167,7 +162,7 @@ class Season:
 
     @property
     def release_date(self) -> datetime | None:
-        return isoparse(self.air_date) if self.air_date else None
+        return datetime.fromisoformat(self.air_date) if self.air_date else None
 
     @property
     def prefix(self) -> str:
@@ -284,12 +279,8 @@ class TVShowDetails:
         genres = [Genre(**g) for g in data.pop("genres", [])]
         seasons = [Season(**s) for s in data.pop("seasons", [])]
         networks = [Network(**n) for n in data.pop("networks", [])]
-        production_companies = [
-            ProductionCompany(**pcom) for pcom in data.pop("production_companies", [])
-        ]
-        production_countries = [
-            ProductionCountry(**pctr) for pctr in data.pop("production_countries", [])
-        ]
+        production_companies = [ProductionCompany(**pcom) for pcom in data.pop("production_companies", [])]
+        production_countries = [ProductionCountry(**pctr) for pctr in data.pop("production_countries", [])]
         spoken_languages = [Language(**sl) for sl in data.pop("spoken_languages", [])]
         return cls(
             next_episode_to_air=EpisodeInfo(**n_eta) if n_eta else None,

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-import aiohttp
+if TYPE_CHECKING:
+    import aiohttp
 
 from ..types import Celebrity, MultiResult
 

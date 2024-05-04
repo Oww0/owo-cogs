@@ -45,9 +45,7 @@ class MovieDB(commands.Cog):
     @commands.bot_has_permissions(embed_links=True)
     @commands.hybrid_command(aliases=["actor", "director", "celeb"])
     @describe(name="Enter celebrity actor/director name. Be specific for accurate results!")
-    async def celebrity(
-        self, ctx: Context, *, name: Annotated[Tuple[discord.Message, Person], PersonFinder]
-    ) -> None:
+    async def celebrity(self, ctx: Context, *, name: Annotated[Tuple[discord.Message, Person], PersonFinder]) -> None:
         """Get info about a movie/tvshow celebrity or crew!"""
         if ctx.interaction:
             return

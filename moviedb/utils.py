@@ -5,7 +5,7 @@ from io import StringIO
 from typing import TYPE_CHECKING, List, Literal, Sequence
 
 import discord
-from dateutil.parser import isoparse
+from discord.utils import format_dt, parse_time
 from redbot.core.utils.chat_formatting import pagify
 
 from .api.base import CDN_BASE, CelebrityCast
@@ -32,7 +32,7 @@ def format_date(
 ) -> str:
     if not date_string:
         return ""
-    return prefix + discord.utils.format_dt(isoparse(date_string), style=style)
+    return prefix + format_dt(parse_time(date_string), style=style)
 
 
 # credits to devon (Gorialis)
@@ -59,7 +59,7 @@ def make_person_embed(person: Person, colour: discord.Colour | int) -> discord.E
     if rip := person.deathday:
         out.write(f"- **Died:**  {format_date(rip, 'D')} ({format_date(rip)})\n")
     if person.place_of_birth:
-        out.write(f"- **Place of Birth:**  {person.place_of_birth}\n")
+        out.write(f"- **Place of birth:**  {person.place_of_birth}\n")
     ext_links = []
     if person.imdb_id:
         ext_links.append(f"[IMDb](https://imdb.com/name/{person.imdb_id})")
@@ -140,11 +140,11 @@ def make_tvshow_embed(data: TVShowDetails, colour: discord.Colour | int) -> disc
     if data.in_production:
         out.write("- **In production:**  ✅ Yes\n")
     if first_air_date := data.first_air_date:
-        out.write(f"- **First Aired:**  {format_date(first_air_date)}\n")
+        out.write(f"- **Started:**  {format_date(first_air_date)}\n")
     if last_air_date := data.last_air_date:
-        out.write(f"- **Last Aired:**  {format_date(last_air_date)}\n")
+        out.write(f"- **Last aired:**  {format_date(last_air_date)}\n")
     if data.number_of_seasons:
-        out.write(f"- **Total Seasons:**  {data.seasons_count}\n")
+        out.write(f"- **Total seasons:**  {data.seasons_count}\n")
     if runtime := data.episode_run_time:
         out.write(f"- **Average episode runtime:**  {runtime[0]} minutes\n")
     if data.genres:
@@ -154,7 +154,7 @@ def make_tvshow_embed(data: TVShowDetails, colour: discord.Colour | int) -> disc
     if data.networks:
         out.write(f"- **Networks:**  {data.all_networks}\n")
     if data.spoken_languages:
-        out.write(f"- **Spoken Languages:**  {data.all_spoken_languages}\n")
+        out.write(f"- **Spoken languages:**  {data.all_spoken_languages}\n")
     embed.description = out.getvalue()
     out.close()
     if data.seasons:
@@ -179,7 +179,7 @@ def make_suggestmovies_embed(
     embed.set_image(url=f"{CDN_BASE}{data.backdrop_path or '/'}")
     embed.set_thumbnail(url=f"{CDN_BASE}{data.poster_path or '/'}")
     if data.release_date:
-        out.write(f"- **Release Date:**  {format_date(data.release_date)}\n")
+        out.write(f"- **Release date:**  {format_date(data.release_date)}\n")
     if data.vote_average and data.vote_count:
         out.write(f"- **TMDB rating:**  {data.humanize_votes}\n")
     embed.set_footer(text=footer, icon_url=TMDB_ICON)
@@ -201,7 +201,7 @@ def make_suggestshows_embed(
     embed.set_image(url=f"{CDN_BASE}{data.backdrop_path or '/'}")
     embed.set_thumbnail(url=f"{CDN_BASE}{data.poster_path or '/'}")
     if data.first_air_date:
-        out.write(f"- **First Aired:**  {format_date(data.first_air_date)}\n")
+        out.write(f"- **Started:**  {format_date(data.first_air_date)}\n")
     if data.vote_average and data.vote_count:
         out.write(f"- **TMDB rating:**  {data.humanize_votes}\n")
     embed.set_footer(text=footer, icon_url=TMDB_ICON)

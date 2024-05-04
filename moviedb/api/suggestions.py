@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import aiohttp
 import dacite
 from redbot.core.utils.chat_formatting import humanize_number
 
 from .base import MediaNotFound
 from ..constants import API_BASE
+
+if TYPE_CHECKING:
+    import aiohttp
 
 
 @dataclass(slots=True)

@@ -33,9 +33,7 @@ class PersonSearch:
         return f"known for {humanize_list([x.title for x in self.known_for])}"
 
     @classmethod
-    async def request(
-        cls, session: ClientSession, api_key: str, query: str
-    ) -> MediaNotFound | list[PersonSearch]:
+    async def request(cls, session: ClientSession, api_key: str, query: str) -> MediaNotFound | list[PersonSearch]:
         all_data = await multi_search(session, api_key, query)
         if not all_data:
             return MediaNotFound("No celebrity persons found from your query!")
@@ -59,9 +57,7 @@ class MovieSearch(BaseSearch):
     adult: bool | None
 
     @classmethod
-    async def request(
-        cls, session: ClientSession, api_key: str, query: str
-    ) -> MediaNotFound | list[MovieSearch]:
+    async def request(cls, session: ClientSession, api_key: str, query: str) -> MediaNotFound | list[MovieSearch]:
         all_data = await multi_search(session, api_key, query)
         if not all_data:
             return MediaNotFound("No movies found from given query!")
@@ -87,9 +83,7 @@ class TVShowSearch(BaseSearch):
         return self.name or self.original_name
 
     @classmethod
-    async def request(
-        cls, session: ClientSession, api_key: str, query: str
-    ) -> MediaNotFound | list[TVShowSearch]:
+    async def request(cls, session: ClientSession, api_key: str, query: str) -> MediaNotFound | list[TVShowSearch]:
         all_data = await multi_search(session, api_key, query)
         if not all_data:
             return MediaNotFound("No TV shows found from given query!")

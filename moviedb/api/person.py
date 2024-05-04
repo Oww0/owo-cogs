@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import aiohttp
 import dacite
 from discord.utils import escape_markdown
 
 from .base import MediaNotFound as NotFound
 from ..constants import API_BASE, CDN_BASE
+
+if TYPE_CHECKING:
+    import aiohttp
 
 _MAP: dict[str, str] = {"tv": "TV", "movie": "Movie"}
 
@@ -102,9 +104,7 @@ class Person:
         return f"{CDN_BASE}{self.profile_path}" if self.profile_path else ""
 
     @classmethod
-    async def request(
-        cls, session: aiohttp.ClientSession, api_key: str, person_id: Any
-    ) -> Person | NotFound:
+    async def request(cls, session: aiohttp.ClientSession, api_key: str, person_id: Any) -> Person | NotFound:
         try:
             async with session.get(
                 f"{API_BASE}/person/{person_id}",
