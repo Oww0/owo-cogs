@@ -1,9 +1,7 @@
-import asyncio
 import base64
 import logging
 from typing import Any
 
-import aiohttp
 import dacite
 from redbot.core.commands import Context
 from redbot.core.utils.chat_formatting import box
@@ -13,7 +11,7 @@ from .models import VisionPayload
 log = logging.getLogger("ocr.utils")
 
 
-async def _get_bytes(session: aiohttp.ClientSession, url: str):
+async def _get_bytes(session, url: str):
     if "imgur.com" in url:
         url = f"https://proxy.duckduckgo.com/iu/?u={url}"
     try:
@@ -22,10 +20,10 @@ async def _get_bytes(session: aiohttp.ClientSession, url: str):
     except Exception:
         return None
     else:
-        return base64.b64encode(buf).decode('utf-8')
+        return base64.b64encode(buf).decode("utf-8")
 
 
-async def free_ocr(session: aiohttp.ClientSession, image_url: str) -> str:
+async def free_ocr(session, image_url: str) -> str:
     sussy_string = "7d3306461d88957"
     file_type = image_url.split(".").pop().upper()
     data = {
@@ -33,7 +31,7 @@ async def free_ocr(session: aiohttp.ClientSession, image_url: str) -> str:
         "apikey": sussy_string,
         "language": "eng",
         "isOverlayRequired": False,
-        "filetype": file_type
+        "filetype": file_type,
     }
 
     async with session.post("https://api.ocr.space/parse/image", data=data) as resp:
@@ -54,9 +52,7 @@ async def free_ocr(session: aiohttp.ClientSession, image_url: str) -> str:
     return result["ParsedResults"][0].get("ParsedText")
 
 
-async def vision_ocr(
-    ctx: Context, detect_handwriting: bool | None, image: str | bytes
-) -> VisionPayload | None:
+async def vision_ocr(ctx: Context, *, image: str | bytes, detect_handwriting: bool = True) -> VisionPayload | None:
     api_key = (await ctx.bot.get_shared_api_tokens("google_vision")).get("api_key")
     if not api_key:
         #  out = await free_ocr(ctx.bot.session, image[0])
@@ -69,18 +65,9 @@ async def vision_ocr(
     payload = {
         "requests": [
             {
-                "features": [
-                    {
-                        "model": "builtin/weekly",
-                        "type": "DOCUMENT_TEXT_DETECTION"
-                    }
-                ],
+                "features": [{"model": "builtin/weekly", "type": detect_type}],
                 "image": {},
-                "imageContext": {
-                    "textDetectionParams": {
-                        "enableTextDetectionConfidenceScore": True
-                    }
-                }
+                "imageContext": {"textDetectionParams": {"enableTextDetectionConfidenceScore": True}},
             }
         ]
     }
@@ -106,9 +93,9 @@ async def vision_ocr(
                         await ctx.send(str(p.error))
                     return None
             data: dict = await resp.json()
-    except (asyncio.TimeoutError, aiohttp.ClientError):
+    except Exception as exc:
         if not ctx.interaction:
-            await ctx.send("Operation timed out.")
+            await ctx.send("Operation timed out.", ephemeral=True)
         return None
 
     output: list[dict[str, Any]] = data.get("responses", [])
@@ -116,11 +103,10 @@ async def vision_ocr(
         if not ctx.interaction:
             await ctx.send("No text detected.")
         return None
-    obj = dacite.from_dict(data_class=VisionPayload, data=data['responses'][0])
+    obj = dacite.from_dict(data_class=VisionPayload, data=data["responses"][0])
     if obj.error and obj.error.message:
         if not ctx.interaction:
             await ctx.send(str(obj.error))
         return None
 
     return obj
-

@@ -2,12 +2,11 @@
 # https://github.com/TrustyJAID/Trusty-cogs/blob/master/notsobot/converter.py
 import re
 
-from discord import DeletedReferencedMessage, Message
+import discord
 from redbot.core.commands import BadArgument, Context, Converter
 
 IMAGE_LINKS: re.Pattern[str] = re.compile(
-    r"(https?:\/\/[^\"\'\s]*\.(?:png|jpg|jpeg|webp)(\?size=[0-9]{1,4})?)",
-    flags=re.I
+    r"(https?:\/\/[^\"\'\s]*\.(?:png|jpg|jpeg|webp)(\?size=[0-9]{1,4})?)", flags=re.I
 )
 
 DISCORD_CDN: tuple[str, str] = (
@@ -29,11 +28,7 @@ class ImageFinder(Converter):
         if matches := IMAGE_LINKS.finditer(argument):
             urls.extend(match.group(1) for match in matches)
         if attachments := ctx.message.attachments:
-            urls.extend(
-                img.url
-                for img in attachments
-                if img.content_type and img.content_type.startswith("image")
-            )
+            urls.extend(img.url for img in attachments if img.content_type and img.content_type.startswith("image"))
         if (e := ctx.message.embeds) and e[0].image:
             urls.append(e[0].image.url)
         if not urls:
@@ -46,22 +41,18 @@ class ImageFinder(Converter):
         return urls
 
 
-async def find_images_in_replies(
-    reference: DeletedReferencedMessage | Message | None
-) -> list[str]:
-    if not reference or not isinstance(reference, Message):
+async def find_images_in_replies(reference: discord.DeletedReferencedMessage | discord.Message | None) -> list[str]:
+    if not reference or not isinstance(reference, discord.Message):
         return []
     urls = []
-    argument = reference.content
+    argument = reference.system_content
     if argument.startswith(DISCORD_CDN):
         urls.append(argument.split()[0])
-    if match := IMAGE_LINKS.search(reference.content):
+    if match := IMAGE_LINKS.search(argument):
         urls.append(match.group(1))
     if reference.attachments:
         urls.extend(
-            img.url
-            for img in reference.attachments
-            if img.content_type and img.content_type.startswith("image")
+            img.url for img in reference.attachments if img.content_type and img.content_type.startswith("image")
         )
     if reference.embeds and reference.embeds[0].image:
         urls.append(reference.embeds[0].image.url)
@@ -75,13 +66,10 @@ async def search_for_images(ctx: Context) -> list[str]:
             urls.append(message.embeds[0].image.url)
         if message.attachments:
             urls.extend(
-                img.url
-                for img in message.attachments
-                if img.content_type and img.content_type.startswith("image")
+                img.url for img in message.attachments if img.content_type and img.content_type.startswith("image")
             )
-        if message.content.startswith(DISCORD_CDN):
-            urls.append(message.content.split()[0])
-        if match := IMAGE_LINKS.search(message.content):
+        if message.system_content.startswith(DISCORD_CDN):
+            urls.append(message.system_content.split()[0])
+        if match := IMAGE_LINKS.search(message.system_content):
             urls.append(match.group(1))
     return urls
-
