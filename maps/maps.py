@@ -11,8 +11,8 @@ MAP_TYPES: tuple[str, ...] = ("roadmap", "satellite", "terrain", "hybrid")
 class Maps(commands.Cog):
     """Fetch a Google map of a specific location with zoom and map types."""
 
-    __authors__ = ("<@306810730055729152>")
-    __version__ = "2.1.0"
+    __authors__ = ("<@306810730055729152>",)
+    __version__ = "2.1.1"
 
     def format_help_for_context(self, ctx: commands.Context) -> str:
         """Thanks Sinbad."""
@@ -27,12 +27,12 @@ class Maps(commands.Cog):
     async def map(self, ctx: commands.Context, *, flags: MapFlags) -> None:
         """Fetch map of a location from Google Maps.
 
-        **Zoom:**
-        `zoom` value must be from level 1 to 20. Defaults to 12.
+        **Zoom level:**
+        `zoom` parameter value must be from level 1 to 20. Defaults to 12.
         Below zoom levels that will show the approximate level of detail:
         ```prolog
          1 to  4 : World
-         5 to  9 : Landmass/continent
+         5 to  9 : Landmass or continent
         10 to 14 : City
         15 to 19 : Streets
         20       : Buildings
@@ -41,10 +41,13 @@ class Maps(commands.Cog):
         **Map types:**
         - `maptype` parameter accepts only below 4 values:
          - `roadmap`, `satellite`, `terrain`, `hybrid`
+         - Defaults to `roadmap` if invalid value provided
+         - See Google's online [docs](https://developers.google.com/maps/documentation/maps-static/start) for more information.
 
-        **Online docs:**
-        Check out Google's detailed docs for more info:
-        https://developers.google.com/maps/documentation/maps-static/start
+        **Example:**
+        - `[p]map new york -zoom 17 -maptype hybrid`
+        - `[p]map jumeirah beach dubai -maptype terrain`
+        - `[p]map niagara falls canada -zoom 15 -maptype satellite`
         """
         api_key = (await ctx.bot.get_shared_api_tokens("googlemaps")).get("api_key")
         if not api_key:
@@ -56,7 +59,7 @@ class Maps(commands.Cog):
             await ctx.send("You need to provide a location name silly", ephemeral=True)
             return
         zoom = zoom if (1 <= zoom <= 20) else 12
-        map_type = "roadmap" if map_type not in MAP_TYPES else map_type
+        map_type = "roadmap" if map_type not in MAP_TYPES else maptype
 
         await ctx.typing()
         base_url = "https://maps.googleapis.com/maps/api/staticmap"
