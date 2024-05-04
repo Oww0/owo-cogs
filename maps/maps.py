@@ -12,7 +12,7 @@ class Maps(commands.Cog):
     """Fetch a Google map of a specific location with zoom and map types."""
 
     __authors__ = ("<@306810730055729152>",)
-    __version__ = "2.1.1"
+    __version__ = "2.1.2"
 
     def format_help_for_context(self, ctx: commands.Context) -> str:
         """Thanks Sinbad."""
@@ -54,12 +54,12 @@ class Maps(commands.Cog):
             await ctx.send("⚠️ Bot owner need to set API key first!", ephemeral=True)
             return
 
-        location, zoom, map_type = flags.location, flags.zoom, flags.map_type
+        location, zoom, map_type = flags.location, flags.zoom, flags.maptype
         if not location:
             await ctx.send("You need to provide a location name silly", ephemeral=True)
             return
         zoom = zoom if (1 <= zoom <= 20) else 12
-        map_type = "roadmap" if map_type not in MAP_TYPES else maptype
+        map_type = "roadmap" if map_type not in MAP_TYPES else map_type
 
         await ctx.typing()
         base_url = "https://maps.googleapis.com/maps/api/staticmap"
