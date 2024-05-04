@@ -93,7 +93,7 @@ class OCR(commands.Cog):
         if not i.client.get_cog("Translate"):
             return
         hidden = True if message.guild else not i.app_permissions.send_messages
-        if message.author.system or message.author.bot:
+        if message.author.system and self.bot.user.id == 830676830419157002:
             hidden = False
             await i.response.send_message(
                 file=text_to_file(pprint(message._data, sort_keys=False), 'message.json'),
