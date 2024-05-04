@@ -1,11 +1,7 @@
-import aiohttp
-import asyncio
 import io
-from typing import Optional
 
 import discord
 from redbot.core import commands
-from redbot.core.utils.chat_formatting import humanize_list
 
 from .converter import MapFlags
 
@@ -15,8 +11,8 @@ MAP_TYPES: tuple[str, ...] = ("roadmap", "satellite", "terrain", "hybrid")
 class Maps(commands.Cog):
     """Fetch a Google map of a specific location with zoom and map types."""
 
-    __authors__ = "<@306810730055729152>"
-    __version__ = "2.0.0"
+    __authors__ = ("<@306810730055729152>")
+    __version__ = "2.1.0"
 
     def format_help_for_context(self, ctx: commands.Context) -> str:
         """Thanks Sinbad."""
@@ -34,7 +30,7 @@ class Maps(commands.Cog):
         **Zoom:**
         `zoom` value must be from level 1 to 20. Defaults to 12.
         Below zoom levels that will show the approximate level of detail:
-        ```
+        ```prolog
          1 to  4 : World
          5 to  9 : Landmass/continent
         10 to 14 : City
@@ -46,6 +42,7 @@ class Maps(commands.Cog):
         - `maptype` parameter accepts only below 4 values:
          - `roadmap`, `satellite`, `terrain`, `hybrid`
 
+        **Online docs:**
         Check out Google's detailed docs for more info:
         https://developers.google.com/maps/documentation/maps-static/start
         """
@@ -79,7 +76,7 @@ class Maps(commands.Cog):
                 if response.status != 200:
                     await ctx.send(f"https://http.cat/{response.status}")
                     return
-                image = BytesIO(await response.read())
+                image = io.BytesIO(await response.read())
                 image.seek(0)
         except Exception as error:
             await ctx.send(f"Operation timed out: {error}")
