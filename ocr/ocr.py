@@ -1,23 +1,36 @@
-import asyncio
+from __future__ import annotations
+
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Annotated, Any, List
 
-import aiohttp
-from redbot.core import commands, __version__ as red_version
-from redbot.core.utils.chat_formatting import box, pagify
+import discord
+from redbot.core import commands
+from redbot.core.utils.chat_formatting import box, pagify, pprint, text_to_file
 
-from .converter import ImageFinder
+from .converter import ImageFinder, find_images_in_replies, search_for_images
+from .iso639 import ISO639_MAP
+from .utils import vision_ocr as do_vision_ocr
 
-log = logging.getLogger("red.owo-cogs.ocr")
+try:
+    from translate.models import DetectedLanguage
+    HAS_TRANSLATE_COG = True
+except (ImportError, ModuleNotFoundError):
+    HAS_TRANSLATE_COG = False
+
+if TYPE_CHECKING:
+    from redbot.core.commands import Context
+    from redbot.core.bot import Red
+
+logger = logging.getLogger("ocr.ocr")
 
 
 class OCR(commands.Cog):
     """Detect text in images using ocr.space or Google Cloud Vision API."""
 
-    __authors__ = ["TrustyJAID", "<@306810730055729152>"]
-    __version__ = "1.3.0"
+    __authors__ = ["<@306810730055729152>", "TrustyJAID"]
+    __version__ = "2.4.0"
 
-    def format_help_for_context(self, ctx: commands.Context) -> str:
+    def format_help_for_context(self, ctx: Context) -> str:
         """Thanks Sinbad."""
         return (
             f"{super().format_help_for_context(ctx)}\n\n"
@@ -25,121 +38,228 @@ class OCR(commands.Cog):
             f"**Cog version:**  v{self.__version__}"
         )
 
-    sussy_string = "7d3306461d88957"
-    session = aiohttp.ClientSession()
+    def __init__(self, bot: Red) -> None:
+        self.bot = bot
+        self.ocr_ctx = discord.app_commands.ContextMenu(
+            name="Run OCR",
+            callback=self.ocr_ctx_menu,
+        )
+        if bot.get_cog("Translate"):
+            self.ocr_translate_ctx = discord.app_commands.ContextMenu(
+                name="OCR + Translate",
+                callback=self.ocr_translate_ctx_menu,
+            )
+
+    async def cog_load(self) -> None:
+        self.bot.tree.add_command(self.ocr_ctx)
+        #  self.bot.tree.add_command(self.ocr_translate_ctx)
+        return
 
     async def cog_unload(self) -> None:
-        if self.session:
-            await self.session.close()
+        self.bot.tree.remove_command(self.ocr_ctx.name, type=self.ocr_ctx.type)
+        #  self.bot.tree.remove_command(self.ocr_translate_ctx.name, type=self.ocr_translate_ctx.type)
+        return
 
-    async def red_delete_data_for_user(self, **kwargs) -> None:
+    async def red_delete_data_for_user(self, **kwargs: Any) -> None:
         """Nothing to delete"""
         pass
 
-    async def _free_ocr(self, ctx: commands.Context, image: str):
-        file_type = image.split(".").pop().upper()
-        data = {
-            "url": image,
-            "apikey": self.sussy_string,
-            "language": "eng",
-            "isOverlayRequired": False,
-            "filetype": file_type
-        }
-
-        result = {}
-        if not result:
-            async with self.session.post(
-                "https://api.ocr.space/parse/image", data=data
-            ) as resp:
-                if resp.status != 200:
-                    return await ctx.send(f"https://http.cat/{resp.status}")
-                result = await resp.json()
-
-        temp_ = result.get("textAnnotations", [{}])
-        if (err := temp_[0].get("error")) and (err_message := err.get("message")):
-            return await ctx.send(f"API returned error: {err_message}")
-
-        if temp_[0].get("description"):
-            return await ctx.send_interactive(
-                pagify(temp_[0]["description"]), box_lang=""
-            )
-
-        if not result.get("ParsedResults"):
-            return await ctx.send(box(str(result.get("ErrorMessage")), "json"))
-
-        return await ctx.send_interactive(
-            pagify(result["ParsedResults"][0].get("ParsedText")),
-            box_lang="py"
+    @staticmethod
+    async def _pre_processing(inter: discord.Interaction[Red], message: discord.Message) -> str | None:
+        logger.debug(
+            "%s (%s) used OCR ctx menu in %r in guild: %r (%s)",
+            inter.user.name,
+            inter.user.id,
+            inter.channel,
+            inter.guild,
+            message.jump_url,
         )
+        images = await find_images_in_replies(message)
+        if not images:
+            await inter.followup.send(
+                "No images or image links were found in that message!",
+                ephemeral=True,
+            )
+            return discord.utils.MISSING
+        logger.debug("\n".join(images))
+        ctx = await commands.Context.from_interaction(inter)
+        r = await do_vision_ocr(ctx, detect_handwriting=True, image=images[0])
+        if not r:
+            await inter.followup.send("OCR call failed guh :cry:", ephemeral=True)
+            return discord.utils.MISSING
+        return r.text_value
 
-    @commands.command(aliases=["freeocr"])
+    async def ocr_ctx_menu(self, i: discord.Interaction[Red], message: discord.Message) -> None:
+        if not i.client.get_cog("Translate"):
+            return
+        hidden = True if message.guild else not i.app_permissions.send_messages
+        if message.author.system and self.bot.user.id == 830676830419157002:
+            hidden = False
+            await i.response.send_message(
+                file=text_to_file(pprint(message._data, sort_keys=False), 'message.json'),
+                ephemeral=False,
+            )
+        if not i.response.is_done():
+            await i.response.defer(ephemeral=hidden)
+        text_value = await self._pre_processing(i, message)
+        if text_value is discord.utils.MISSING:
+            return
+        if not text_value:
+            await i.followup.send("No text content extracted from that image", ephemeral=hidden)
+            return
+        if len(text_value) > 1984:
+            await i.followup.send(
+                f"{i.user.mention} text output too long so attached as file:",
+                file=text_to_file(text_value),
+                ephemeral=hidden,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            await i.followup.send(box(text_value, "py"), ephemeral=hidden)
+        return
+
+    async def ocr_translate_ctx_menu(self, i: discord.Interaction[Red], message: discord.Message) -> None:
+        hidden = True if message.guild else not i.app_permissions.send_messages
+        await i.response.defer(ephemeral=hidden)
+        text_value = await self._pre_processing(i, message)
+        if text_value is discord.utils.MISSING:
+            return
+        if not text_value:
+            await i.followup.send("No text content extracted from that image", ephemeral=True)
+            return
+        cog = i.client.get_cog("Translate")
+        if not cog:
+            await i.followup.send("Translate module not found wtf", ephemeral=True)
+            return
+
+        detected_lang = DetectedLanguage(language="auto", confidence=0)
+        try:
+            detected_lang = await cog._tr.detect_language(text_value, guild=i.guild)
+        except Exception:
+            from_lang = "auto"
+        else:
+            from_lang = detected_lang.language
+        translated_text = await self.run_translate(cog, i, from_lang, "en", text_value)
+        if not translated_text:
+            if len(text_value) > 1984:
+                await i.followup.send(file=text_to_file(text_value), ephemeral=True)
+            else:
+                await i.followup.send(box(text_value, "py"), ephemeral=True)
+            return
+        user = message.author
+        _, embed = translated_text.embed(user, from_lang, "en", user, detected_lang.confidence)
+        await i.followup.send(embed=embed, ephemeral=True)
+        return
+
+    @staticmethod
+    async def run_translate(
+        cog, ctx: Context[Red] | discord.Interaction[Red], from_lang: str, to_language: str, text: str
+    ):
+        send = ctx.followup.send if isinstance(ctx, discord.Interaction) else ctx.send
+        if str(to_language) == from_lang:
+            ln_from = ISO639_MAP.get(from_lang) or from_lang.upper()
+            ln_to = ISO639_MAP.get(to_language) or to_language.upper()
+            await send(f"⚠️ I cannot translate `{ln_from}` to `{ln_to}`! Same language!?")
+            return None
+        try:
+            translated_text = await cog._tr.translate_text(to_language, text, from_lang, guild=ctx.guild)
+        except Exception as exc:
+            await send(str(exc))
+            return None
+        if translated_text is None:
+            await send("Google said there is nothing to be translated /shrug")
+            return None
+        else:
+            return translated_text
+
     @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.bot_has_permissions(read_message_history=True)
+    @commands.command()
     async def ocr(
         self,
-        ctx: commands.Context,
-        detect_handwriting: Optional[bool] = False,
-        *,
-        image: ImageFinder = None,
-    ):
+        ctx: Context[Red],
+        image: Annotated[List[str], ImageFinder] = None,
+    ) -> None:
         """Detect text in an image through Google OCR API.
 
-        You may use it to run OCR on old messages which contains attachments/image links.
-        Simply reply to the said message with `[p]ocr` for detection to work.
+        Use it on old messages with attachments/image links by replying to said message with `[p]ocr`
 
         Pass `detect_handwriting` as True or `1` with command to more accurately detect handwriting from target image.
 
         **Example:**
         - `[p]ocr image/attachment/URL`
-        # To better detect handwriting in target image, do:
+        - # To better detect handwriting in target image do:
         - `[p]ocr 1 image/attachment/URL`
-        ```
         """
-        api_key = (await ctx.bot.get_shared_api_tokens("google_vision")).get("api_key")
-
-        async with ctx.typing():
-            if image is None:
-                if ctx.message.reference:
-                    message = ctx.message.reference.resolved
-                    image = await ImageFinder().find_images_in_replies(message)
-                else:
-                    image = await ImageFinder().search_for_images(ctx)
+        await ctx.typing()
+        if not image:
+            attached = ctx.message.attachments
+            mime_type = (attached[0].content_type if attached else None) or ""
+            if attached and len(attached) == 1 and mime_type.startswith("image"):
+                img = await attached[0].read(use_cached=True)
+                r = await do_vision_ocr(ctx, image=img)
+                if not r:
+                    return
+                await ctx.send_interactive(pagify(r.text_value or ""), box_lang="", timeout=120)
+                return
+            elif ctx.message.reference and (message := ctx.message.reference.resolved):
+                image = await find_images_in_replies(message)
+            else:
+                image = await search_for_images(ctx)
             if not image:
-                return await ctx.send("No images or direct image links were detected. 😢")
+                await ctx.send("No images or direct image links were detected. 😢")
+                return
+        resp = await do_vision_ocr(ctx, image=image[0])
+        if not resp:
+            return
+        await ctx.send_interactive(pagify(resp.text_value or ""), box_lang="", timeout=120)
+        return
 
-            if not api_key:
-                return await self._free_ocr(ctx, image[0])
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.bot_has_permissions(read_message_history=True)
+    @commands.command()
+    async def ocrtr(
+        self,
+        ctx: Context[Red],
+        image: Annotated[List[str], ImageFinder] = None,
+    ) -> None:
+        """Do OCR & translate on an image."""
+        if not image:
+            if ctx.message.reference and (message := ctx.message.reference.resolved):
+                image = await find_images_in_replies(message)
+            else:
+                image = await search_for_images(ctx)
+            if not image:
+                await ctx.send("No images or direct image links were detected. 😢")
+                return
+        await ctx.typing()
+        resp = await do_vision_ocr(ctx, image=image[0])
+        if not resp:
+            return
 
-            base_url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
-            headers = {"Content-Type": "application/json;charset=utf-8"}
-            detect_type = "DOCUMENT_TEXT_DETECTION" if detect_handwriting else "TEXT_DETECTION"
-            payload = {
-                "requests": [
-                    {
-                        "image": {"source": {"imageUri": image[0]}},
-                        "features": [{"type": detect_type}],
-                    }
-                ]
-            }
+        text = resp.text_value or ""
+        cog = ctx.bot.get_cog("Translate")
+        if not cog:
+            await ctx.send("Translate module not found nooooooo")
+            return
+        if TYPE_CHECKING:
+            from translate.translate import Translate
+            assert isinstance(cog, Translate)
 
-            try:
-                async with self.session.post(base_url, json=payload, headers=headers) as resp:
-                    if resp.status != 200:
-                        log.info("Vision OCR returned response code: %s", resp.status)
-                        return await ctx.send(f"https://http.cat/{resp.status}")
-                    data = await resp.json()
-            except Exception as exc:
-                log.error("Error in querying Vision OCR API:", exc_info=exc)
-                return await ctx.send(f"Operation timed out: {exc}")
+        detected_lang = DetectedLanguage(language="auto", confidence=0)
+        try:
+            detected_lang = await cog._tr.detect_language(text, guild=ctx.guild)
+        except Exception:
+            # await ctx.send(str(exc))
+            from_lang = ft.language_code if (ft := resp.fullTextAnnotation) else "auto"
+        else:
+            from_lang = detected_lang.language
+        translated_text = await self.run_translate(cog, ctx, from_lang, "en", text)
+        if not translated_text:
+            await ctx.send_interactive(pagify(text), box_lang="", timeout=120)
+            return
+        _, embed = translated_text.embed(ctx.author, from_lang, "en", ctx.author, detected_lang.confidence)
+        ref = ctx.message.to_reference(fail_if_not_exists=False)
+        await ctx.send(embed=embed, reference=ref, mention_author=False)
+        return
 
-        output = data.get("responses")
-        if not output or output[0] == {}:
-            return await ctx.send("No text detected.")
-        if (err := output[0].get("error")) and (err_message := err.get("message")):
-            return await ctx.send(f"API returned error: {err_message}")
-
-        detected_text = output[0].get("textAnnotations", [{}])[0].get("description")
-        if not detected_text:
-            return await ctx.send("No text was detected in the target image.")
-
-        await ctx.send_interactive(pagify(detected_text), box_lang="")
