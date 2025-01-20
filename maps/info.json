@@ -1,15 +1,20 @@
 {
     "name": "Google Maps",
-    "short": "Fetch a Google map of a specific location.",
-    "description": "Fetch a Google map of a specific location in various modes.",
+    "short": "Fetch map of a location from Google Maps.",
+    "description": "Fetch map of a location from Google Maps in various modes.",
     "end_user_data_statement": "This cog does not persistently store data or metadata about users.",
     "install_msg": "Hi, thanks for installing my Maps cog. Please note that this cog requires some setup to do on your part to get a free API key, mainly to enable Maps API. If you can figure that out on your own, that's genius, but if you find yourself struggling on how to enable it and still want to use this cog, you can ask me on Discord for help. I'll try my best to help you out.",
-    "author": ["siu3334"],
+    "author": ["owocado"],
     "required_cogs": {},
     "requirements": [],
     "tags": ["maps", "map", "google map", "google maps"],
-    "min_bot_version": "3.4.0",
-    "hidden": false,
+    "min_bot_version": "3.6.0",
+    "min_python_version": [
+        3,
+        12,
+        0
+    ],
+    "hidden": true,
     "disabled": false,
     "type": "COG"
 }
