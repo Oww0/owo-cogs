@@ -1,41 +1,54 @@
-from typing import Annotated, Any, List, Tuple, cast
+from __future__ import annotations
 
+import logging
+from typing import TYPE_CHECKING, Any
+
+import cachebox
 import discord
+import msgspec
+from box.box import Box
 from discord.app_commands import describe
 from redbot.core import commands
-from redbot.core.commands import Context
-from redbot.core.utils.views import BaseMenu, ListPages
 
-from .api.base import CDN_BASE, MediaNotFound
-from .api.details import MovieDetails, TVShowDetails
+from .api.base import MediaNotFound, multi_search
+from .api.constants import API_BASE
 from .api.person import Person
-from .api.suggestions import MovieSuggestions, TVShowSuggestions
-from .constants import TMDB_ICON
-from .converter import MovieFinder, PersonFinder, TVShowFinder
-from .utils import (
-    make_movie_embed,
-    make_person_embed,
-    make_suggestmovies_embed,
-    make_suggestshows_embed,
-    make_tvshow_embed,
-    parse_credits,
-)
+from .api.search import MovieSearch, PersonSearch, TVShowSearch
+from .utils import fetch_multi, gen_movie_or_tvshow_embed, make_person_embed
+from .views import ChoiceView, TVMovieSelect, TVMovieView
+
+if TYPE_CHECKING:
+    from redbot.core.bot import Red
+    from redbot.core.commands import Context
+
+    from .api.details import MovieDetails, TVShowDetails
+    from .types.people import Person as PersonPayload
 
 
 COLOR = discord.Colour(0xC57FFF)
+
+logger = logging.getLogger('moviedb.core')
 
 
 class MovieDB(commands.Cog):
     """Get summarized info about a movie or TV show/series."""
 
-    __authors__ = "<@306810730055729152>"
-    __version__ = "4.3.0"
+    __authors__ = '<@306810730055729152>'
+    __version__ = '5.0.0'
 
-    def format_help_for_context(self, ctx: Context) -> str:  # Thanks Sinbad!
+    def __init__(self, *args: Any, **kwargs: Any):
+        self._cache: cachebox.TTLCache[
+            int, MovieDetails | Person | TVShowDetails
+        ] = cachebox.TTLCache(0, 1800)
+
+    async def cog_unload(self) -> None:
+        self._cache.clear()
+
+    def format_help_for_context(self, ctx: Context[Red]) -> str:  # Thanks Sinbad!
         return (
-            f"{super().format_help_for_context(ctx)}\n\n"
-            f"**Author(s):** {self.__authors__}\n"
-            f"**Cog version:** {self.__version__}"
+            f'{super().format_help_for_context(ctx)}\n\n'
+            f'**Author(s):** {self.__authors__}\n'
+            f'**Cog version:** {self.__version__}'
         )
 
     async def red_delete_data_for_user(self, **kwargs: Any) -> None:
@@ -43,138 +56,155 @@ class MovieDB(commands.Cog):
         pass
 
     @commands.bot_has_permissions(embed_links=True)
-    @commands.hybrid_command(aliases=["actor", "director", "celeb"])
-    @describe(name="Enter celebrity actor/director name. Be specific for accurate results!")
-    async def celebrity(self, ctx: Context, *, name: Annotated[Tuple[discord.Message, Person], PersonFinder]) -> None:
+    @commands.hybrid_command(aliases=['actor', 'director', 'celeb'])
+    @describe(name='Enter celebrity actor/director name. Be concise for accurate results!')
+    async def celebrity(self, ctx: Context[Red], *, name: str) -> None:
         """Get info about a movie/tvshow celebrity or crew!"""
-        if ctx.interaction:
-            return
-        await ctx.defer(ephemeral=True)
-        message, data = name
-        emb1 = make_person_embed(data, COLOR)
+
+        await ctx.defer()
+        api_key = (await ctx.bot.get_shared_api_tokens('tmdb')).get('api_key', '')
         try:
-            await message.edit(content=None, embed=emb1)
+            all_data = await multi_search(ctx.bot.session, api_key, name)
+        except MediaNotFound as err:
+            raise commands.BadArgument(str(err)) from err
+
+        results = [
+            msgspec.convert(obj, PersonSearch, strict=False, from_attributes=True)
+            for obj in all_data if obj['media_type'] == 'person'
+        ]
+        if not results:
+            raise commands.BadArgument('⛔ No celebrities could be found from given input.')
+
+        person_id =  results[0].id
+        try:
+            person = await self.fetch_person(ctx.bot, api_key, person_id)
+        except MediaNotFound as err:
+            raise commands.BadArgument(str(err)) from None
+        emb1 = make_person_embed(person, COLOR)
+        count = len(results)
+        if count > 1:
+            view = ChoiceView(
+                options=[
+                    discord.SelectOption(
+                        label=obj.name,
+                        value=str(obj.id),
+                        description=obj.famous_for if len(obj.famous_for) < 100 else f'{obj.famous_for[:96]}...',
+                    )
+                    for obj in results
+                ],
+                author_id=ctx.author.id,
+                result_id=person_id,
+                placeholder=f'Check out other {count - 1} celebrities...'
+            )
+            message = await ctx.send(embeds=[emb1], view=view)
+            await view.wait()
+            try:
+                await message.edit(view=None)
+            except Exception:
+                pass
+
+        await ctx.send(embeds=[emb1])
+
+    @staticmethod
+    async def fetch_person(bot: Red, key: str, person_id: int) -> Person:
+        try:
+            async with bot.session.get(
+                f'{API_BASE}/person/{person_id}',
+                params={'api_key': key}, # , 'append_to_response': 'combined_credits'
+            ) as resp:
+                code = resp.status
+                if code in (401, 404):
+                    data = await resp.json(loads=discord.utils._from_json)
+                    raise MediaNotFound(**data)
+                if code != 200:
+                    raise MediaNotFound(status_message='😔 No results found.', status_code=code)
+                person_data: PersonPayload = await resp.json(loads=discord.utils._from_json)
         except Exception:
-            await ctx.send(embed=emb1)
-        return
+            raise MediaNotFound(status_message='Operation timed out!', status_code=408) from None
+
+        try:
+            person = msgspec.convert(person_data, Person, strict=False)
+        except Exception as err:
+            logger.warning('Error in msgspec.convert to type Person:', exc_info=err)
+            person: Person = Box(person_data)  # type: ignore
+        return person
 
     @commands.bot_has_permissions(embed_links=True)
-    @commands.hybrid_command()
-    @describe(movie="Provide name of the movie. Try to be specific for accurate results!")
-    async def movie(self, ctx: Context, *, movie: MovieFinder):
-        """Show various info about a movie."""
+    @commands.hybrid_command(aliases=('tmdb', 'imdb', 'tv', 'tvshow'))
+    @describe(name='Search for movies or TV shows. Provide concise movie/series name to get accurate results.')
+    async def movie(self, ctx: Context[Red], *, name: str):
+        """Get info about a movie or TV series."""
         await ctx.typing()
-        if isinstance(movie, MediaNotFound):
-            return await ctx.send(str(movie))
 
-        embeds: List[discord.Embed] = []
-        data = cast(MovieDetails, movie)
-        embeds.append(make_movie_embed(data, COLOR))
-        emb2 = discord.Embed(colour=COLOR, title=data.title)
-        emb2.url = f"https://themoviedb.org/movie/{data.id}"
-        if data.backdrop_path:
-            emb2.set_image(url=f"{CDN_BASE}{data.backdrop_path}")
-        if data.production_companies:
-            emb2.add_field(name="Production Companies:", value=data.all_production_companies)
-        if data.production_countries:
-            emb2.add_field(
-                name="Production Countries:",
-                value=data.all_production_countries,
-                inline=False,
+        #  embeds: list[discord.Embed] = []
+        api_key = (await ctx.bot.get_shared_api_tokens('tmdb')).get('api_key', '')
+        try:
+            all_data = await multi_search(ctx.bot.session, api_key, name)
+        except MediaNotFound as err:
+            raise commands.BadArgument(str(err)) from err
+
+        if not all_data:
+            raise commands.BadArgument('⛔ No movie or TV series found.')
+
+        results: list[MovieSearch | TVShowSearch] = []
+            # msgspec.convert(obj, MovieSearch, strict=False, from_attributes=True)
+        for obj in all_data:
+            if obj['media_type'] == 'movie':
+                try:
+                    ms = msgspec.convert(obj, MovieSearch, strict=False, from_attributes=True)
+                except Exception:
+                    results.append(Box(obj))  # type: ignore
+                else:
+                    results.append(ms)
+            elif obj['media_type'] == 'tv':
+                try:
+                    tvs = msgspec.convert(obj, TVShowSearch, strict=False, from_attributes=True)
+                except Exception:
+                    results.append(Box(obj))  # type: ignore
+                else:
+                    results.append(tvs)
+            else:
+                continue
+        if not results:
+            raise commands.BadArgument('⛔ No movie or TV series found, only celebs/crew people.')
+
+        data = await fetch_multi(ctx.bot, api_key, item_id=results[0].id, media_type=results[0].media_type)
+        em1 = gen_movie_or_tvshow_embed(data)
+        #  embeds.append(em1)
+
+        view = TVMovieView(author_id=ctx.author.id, source=data)
+        if len(results) > 1:
+            view.add_item(
+                TVMovieSelect(
+                    options=self.gen_dropdown_options(results),
+                    placeholder=f'Check out other {len(results) - 1} entries...'
+                )
             )
-        if data.tagline:
-            emb2.add_field(name="Tagline:", value=data.tagline, inline=False)
-        if bool(emb2.fields) or bool(emb2.image):
-            embeds.append(emb2)
+        view.message = await ctx.send(embeds=[em1], view=view)
+        await view.wait()
+        try:
+            await view.message.edit(view=None)
+        except Exception:
+            pass
 
-        if data.credits:
-            emb2.set_footer(text="See next page to see the celebrity cast!", icon_url=TMDB_ICON)
-            celebrities_embed = parse_credits(
-                data.credits,
-                colour=COLOR,
-                tmdb_id=f"movie/{data.id}",
-                title=data.title,
+    @movie.error
+    async def on_movie_error(self, ctx: Context[Red], error: commands.HybridCommandError):
+        try:
+            await ctx.send(str(error), ephemeral=True)
+        except Exception:
+            logger.warning('[%s] %s', error.__class__.__name__, error)
+
+    @staticmethod
+    def gen_dropdown_options(results: list[MovieSearch | TVShowSearch]):
+        return [
+            discord.SelectOption(
+                label=pp.title if len(pp.title) < 100 else f'{pp.title[:96]}...',
+                description=(
+                    f'{pp.human_type.title()} • {pp.year or "Upcoming"}'
+                    f' • {pp.genres or pp.get_short_overview(75) or "h"}'
+                ),
+                value=f'{pp.id}_{pp.media_type}',
             )
-            embeds.extend(celebrities_embed)
-        await BaseMenu(ListPages(embeds), timeout=120, ctx=ctx).start(ctx, ephemeral=True)
-        return
+            for pp in results
+        ]
 
-    @commands.bot_has_permissions(embed_links=True)
-    @commands.hybrid_command(aliases=["tv", "tvseries"], fallback="search")
-    @describe(tv_show="Provide name of TV show. Try to be specific for accurate results!")
-    async def tvshow(self, ctx: Context, *, tv_show: TVShowFinder):
-        """Show various info about a TV show/series."""
-        await ctx.typing()
-        if isinstance(tv_show, MediaNotFound):
-            return await ctx.send(str(tv_show))
-
-        embeds: List[discord.Embed] = []
-        data = cast(TVShowDetails, tv_show)
-        embeds.append(make_tvshow_embed(data, COLOR))
-        emb2 = discord.Embed(colour=COLOR, title=data.name)
-        emb2.url = f"https://themoviedb.org/tv/{data.id}"
-        if data.backdrop_path:
-            emb2.set_image(url=f"{CDN_BASE}{data.backdrop_path}")
-        if production_countries := data.production_countries:
-            emb2.add_field(
-                name="Production Countries:",
-                value="\n".join([m.name for m in production_countries]),
-            )
-        if production_companies := data.production_companies:
-            emb2.add_field(
-                name="Production Companies:",
-                value=", ".join([m.name for m in production_companies]),
-                inline=False,
-            )
-        if data.tagline:
-            emb2.add_field(name="Tagline:", value=data.tagline, inline=False)
-        if bool(emb2.fields) or bool(emb2.image):
-            embeds.append(emb2)
-
-        if data.credits:
-            emb2.set_footer(text="See next page for series' celebrity cast!", icon_url=TMDB_ICON)
-            celebrities_embed = parse_credits(
-                data.credits,
-                colour=COLOR,
-                tmdb_id=f"tv/{data.id}",
-                title=data.name,
-            )
-            embeds.extend(celebrities_embed)
-        await BaseMenu(ListPages(embeds), timeout=120, ctx=ctx).start(ctx, ephemeral=True)
-        return
-
-    @commands.bot_has_permissions(embed_links=True)
-    @commands.hybrid_command(aliases=["suggestmovie"])
-    @describe(movie="Provide name of the movie. Try to be specific in your query!")
-    async def suggestmovies(self, ctx: Context, *, movie: MovieFinder):
-        """Get similar movies suggestions based on the given movie name."""
-        await ctx.typing()
-        if isinstance(movie, MediaNotFound):
-            return await ctx.send(str(movie))
-
-        pages: List[discord.Embed] = []
-        output = cast(List[MovieSuggestions], movie)
-        for i, data in enumerate(output, start=1):
-            colour = COLOR
-            footer = f"Page {i} of {len(output)}"
-            pages.append(make_suggestmovies_embed(data, colour, footer))
-        await BaseMenu(ListPages(pages), timeout=120, ctx=ctx).start(ctx, ephemeral=True)
-        return
-
-    @commands.bot_has_permissions(embed_links=True)
-    @commands.hybrid_command(aliases=["suggestshow"])
-    @describe(tv_show="Provide name of TV show. Try to be specific for accurate results!")
-    async def suggestshows(self, ctx: Context, *, tv_show: TVShowFinder):
-        """Get similar TV show suggestions from the given TV series name."""
-        await ctx.typing()
-        if isinstance(tv_show, MediaNotFound):
-            return await ctx.send(str(tv_show))
-
-        pages: List[discord.Embed] = []
-        output = cast(List[TVShowSuggestions], tv_show)
-        for i, data in enumerate(output, start=1):
-            colour = COLOR
-            footer = f"Page {i} of {len(output)}"
-            pages.append(make_suggestshows_embed(data, colour, footer))
-        await BaseMenu(ListPages(pages), timeout=120, ctx=ctx).start(ctx, ephemeral=True)
-        return

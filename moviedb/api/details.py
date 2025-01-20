@@ -1,123 +1,178 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Literal
 
-import dacite
+import discord
+import msgspec
 from discord.utils import utcnow
-from redbot.core.utils.chat_formatting import humanize_number
 
-from .base import (
-    CelebrityCast,
-    Genre,
-    MediaNotFound,
-    ProductionCompany,
-    ProductionCountry,
-    Language,
-)
-from ..constants import API_BASE
+from .base import CelebrityCast, Genre, Language, ProductionCompany, ProductionCountry, Trailer # noqa
 from ..utils import format_date
 
 if TYPE_CHECKING:
-    import aiohttp
+    from redbot.core.bot import Red
+
+    from ..types.imdbapi import IMDbData
+
+MISSING = discord.utils.MISSING
 
 
-@dataclass(slots=True)
-class MovieDetails:
-    id: int
-    title: str
-    original_title: str
-    original_language: str
+class MovieCrew(msgspec.Struct, omit_defaults=True):
     adult: bool
-    video: bool
+    gender: Literal[0, 1, 2, 3]
+    id: int
+    known_for_department: str
+    name: str
+    original_name: str | None
+    popularity: float
+    profile_path: str | None
+    credit_id: str
+    department: str
+    job: str
+
+    @property
+    def tmdb_url(self):
+        return f'https://www.themoviedb.org/person/{self.id}'
+
+
+class Credits(msgspec.Struct, omit_defaults=True):
+    cast: list[CelebrityCast] = msgspec.field(default_factory=list)
+    crew: list[MovieCrew] = msgspec.field(default_factory=list)
+
+
+class VideoResult(msgspec.Struct, omit_defaults=True):
+    results: list[Trailer] = msgspec.field(default_factory=list)
+
+
+class CommonMixin(msgspec.Struct, kw_only=True, omit_defaults=True):
+    adult: bool
+    backdrop_path: str | None
+    credits: Credits
+    homepage: str | None
+    id: int
+    original_language: str
+    overview: str | None
+    popularity: float | None
+    poster_path: str | None
     status: str
     tagline: str | None
-    overview: str | None
-    release_date: str | None
+    vote_average: float | None
+    vote_count: int | None
+    videos: VideoResult
+    genres: list[Genre] = msgspec.field(default_factory=list)
+    production_companies: list[ProductionCompany] = msgspec.field(default_factory=list)
+    production_countries: list[ProductionCountry] = msgspec.field(default_factory=list)
+
+    @property
+    def cast(self):
+        return self.credits.cast if self.credits else MISSING
+
+    @property
+    def crew(self):
+        return self.credits.crew if self.credits else MISSING
+
+    @property
+    def total_cast(self):
+        return len(self.cast) if self.cast else 0
+
+    @property
+    def total_crew(self):
+        return len(self.crew) if self.crew else 0
+
+    @property
+    def trailers(self):
+        return [tr for tr in self.videos.results if tr.type == 'Trailer'] if self.videos else []
+
+    def get_short_overview(self, chars: int = 100):
+        if not self.overview:
+            return ''
+        return f'{self.overview[:chars - 4]}...' if len(self.overview) > chars else self.overview
+
+
+class MovieDetails(CommonMixin, omit_defaults=True):
     budget: int | None
+    imdb_id: str | None
+    original_title: str
+    release_date: str | None
     revenue: int | None
     runtime: int | None
-    vote_count: int | None
-    vote_average: float | None
-    popularity: float | None
-    homepage: str | None
-    imdb_id: str | None
-    poster_path: str | None
-    backdrop_path: str | None
-    genres: list[Genre]
-    credits: list[CelebrityCast]
-    spoken_languages: list[Language]
-    production_companies: list[ProductionCompany]
-    production_countries: list[ProductionCountry]
+    title: str
+    video: bool
+    spoken_languages: list[Language] = msgspec.field(default_factory=list)
+    origin_country: list[str] = msgspec.field(default_factory=list)
 
     @property
     def all_genres(self) -> str:
-        return ", ".join(g.name for g in self.genres)
+        return ', '.join(g.name for g in self.genres)
 
     @property
     def all_production_companies(self) -> str:
-        return "\n".join(g.name for g in self.production_companies)
+        return ', '.join(g.name for g in self.production_companies)
 
     @property
     def all_production_countries(self) -> str:
-        return ", ".join(g.name for g in self.production_countries)
+        return ', '.join(g.name for g in self.production_countries)
 
     @property
     def all_spoken_languages(self) -> str:
-        return ", ".join(str(g) for g in self.spoken_languages)
+        return ', '.join(str(g) for g in self.spoken_languages)
 
     @property
     def humanize_runtime(self) -> str:
         if not self.runtime:
-            return ""
+            return ''
         h, m = self.runtime // 60, self.runtime % 60
-        hours, minutes = f"{h}h" if h else "", f"{m}m" if m else ""
-        return f"{hours} {minutes}"
+        hours, minutes = f'{h} hr' if h else '', f'{m} mins' if m else ''
+        return f'{hours} {minutes}'
 
     @property
     def humanize_votes(self) -> str:
-        if not self.vote_count:
-            return ""
-        return f"**{self.vote_average:.1f}** ★ ({humanize_number(self.vote_count)} votes)"
+        votes = self.vote_count
+        if not votes:
+            return f':star: **{self.vote_average:.1f}** '
+        num = f'{votes / 1000:.1f}K' if votes > 999 else str(votes)
+        return f':star: **{self.vote_average:.1f}** ({num} votes)'
+
+    @property
+    def imdb_url(self):
+        return f'https://imdb.com/title/{self.imdb_id}' if self.imdb_id else None
+
+    @property
+    def media_type(self) -> Literal['movie', 'tv']:
+        return 'movie'
+
+    @property
+    def tmdb_url(self):
+        return f'https://themoviedb.org/movie/{self.id}'
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> MovieDetails:
-        genres = [Genre(**g) for g in data.pop("genres", [])]
-        credits = [CelebrityCast(**c) for c in data.pop("credits", {}).get("cast", [])]
-        spoken_languages = [Language(**sl) for sl in data.pop("spoken_languages", [])]
-        production_companies = [ProductionCompany(**p) for p in data.pop("production_companies", [])]
-        production_countries = [ProductionCountry(**pc) for pc in data.pop("production_countries", [])]
-        return cls(
-            genres=genres,
-            credits=credits,
-            spoken_languages=spoken_languages,
-            production_companies=production_companies,
-            production_countries=production_countries,
-            **data,
-        )
+    async def get_imdb_rating(cls, bot: Red):
+        if not cls.imdb_id:
+            return 0.0
 
-    @classmethod
-    async def request(cls, session: aiohttp.ClientSession, api_key: str, movie_id: Any) -> MediaNotFound | MovieDetails:
-        movie_data = {}
-        params = {"api_key": api_key, "append_to_response": "credits"}
+        from .constants import IMDBAPI_GQL_QUERY
+
         try:
-            async with session.get(f"{API_BASE}/movie/{movie_id}", params=params) as resp:
-                if resp.status in [401, 404]:
-                    err_data = await resp.json()
-                    return MediaNotFound(err_data["status_message"], resp.status)
-                if resp.status != 200:
-                    return MediaNotFound("", resp.status)
-                movie_data: dict = await resp.json()
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            return MediaNotFound("⚠️ Operation timed out.", 408)
-        movie_data["credits"] = movie_data.pop("credits", {}).get("cast", [])
-        return dacite.from_dict(data_class=cls, data=movie_data)
+            async with bot.session.post(
+                'https://graph.imdbapi.dev/v1',
+                json={'query': IMDBAPI_GQL_QUERY, 'variables': {"IMDB_ID": cls.imdb_id}},
+                headers={'user-agent': 'merlin @ discord (user_id: 830676830419157002)'}
+            ) as r:
+                if r.status != 200:
+                    return 0.0
+                data: dict[Literal['data'], IMDbData] = await r.json()
+        except Exception:
+            return 0.0
+
+        try:
+            rating = data['data']['title']['rating']
+            return rating['aggregate_rating'] if rating else 0.0
+        except KeyError:
+            return 0.0
 
 
-@dataclass(slots=True)
-class Creator:
+class Creator(msgspec.Struct):
     id: int
     credit_id: str
     name: str
@@ -125,8 +180,7 @@ class Creator:
     profile_path: str | None
 
 
-@dataclass(slots=True)
-class EpisodeInfo:
+class EpisodeInfo(msgspec.Struct):
     id: int
     name: str
     overview: str
@@ -141,16 +195,14 @@ class EpisodeInfo:
     show_id: int | None
 
 
-@dataclass(slots=True)
-class Network:
+class Network(msgspec.Struct):
     id: int
     name: str
     logo_path: str | None
     origin_country: str | None
 
 
-@dataclass(slots=True)
-class Season:
+class Season(msgspec.Struct, omit_defaults=True):
     id: int
     name: str
     air_date: str | None
@@ -167,72 +219,56 @@ class Season:
     @property
     def prefix(self) -> str:
         if not self.release_date:
-            return ""
-        return "airing" if self.release_date.timestamp() > utcnow().timestamp() else "aired"
+            return ''
+        return 'airing' if self.release_date.timestamp() > utcnow().timestamp() else 'aired'
 
 
-@dataclass(slots=True)
-class TVShowDetails:
-    id: int
-    adult: bool
-    name: str
-    original_name: str
+class TVShowDetails(CommonMixin, omit_defaults=True):
     first_air_date: str | None
-    last_air_date: str | None
-    homepage: str | None
-    overview: str
     in_production: bool
-    status: str
-    type: str | None
-    tagline: str | None
+    last_air_date: str | None
+    last_episode_to_air: EpisodeInfo | None
+    name: str
+    next_episode_to_air: EpisodeInfo | None
     number_of_episodes: int | None
     number_of_seasons: int | None
-    popularity: float | None
-    vote_average: float | None
-    vote_count: int | None
     original_language: str | None
-    backdrop_path: str | None
-    poster_path: str | None
-    next_episode_to_air: EpisodeInfo | None
-    last_episode_to_air: EpisodeInfo | None
-    created_by: list[Creator]
-    credits: list[CelebrityCast]
-    episode_run_time: list[int]
-    genres: list[Genre]
-    seasons: list[Season]
-    languages: list[str]
-    networks: list[Network]
-    origin_country: list[str]
-    production_companies: list[ProductionCompany]
-    production_countries: list[ProductionCountry]
-    spoken_languages: list[Language]
+    original_name: str
+    type: str | None
+    created_by: list[Creator] = msgspec.field(default_factory=list)
+    episode_run_time: list[int] = msgspec.field(default_factory=list)
+    seasons: list[Season] = msgspec.field(default_factory=list)
+    languages: list[str] = msgspec.field(default_factory=list)
+    networks: list[Network] = msgspec.field(default_factory=list)
+    origin_country: list[str] = msgspec.field(default_factory=list)
+    spoken_languages: list[Language] = msgspec.field(default_factory=list)
 
     @property
     def all_genres(self) -> str:
-        return ", ".join([g.name for g in self.genres])
+        return ', '.join(g.name for g in self.genres)
 
     @property
     def all_production_companies(self) -> str:
-        return ", ".join([g.name for g in self.production_companies])
+        return ', '.join(g.name for g in self.production_companies)
 
     @property
     def all_production_countries(self) -> str:
-        return ", ".join([g.name for g in self.production_countries])
+        return ', '.join(g.name for g in self.production_countries)
 
     @property
     def all_spoken_languages(self) -> str:
-        return ", ".join([g.name for g in self.spoken_languages])
+        return ', '.join(str(g) for g in self.spoken_languages)
 
     @property
     def all_networks(self) -> str:
         if len(self.networks) > 3:
             left = len(self.networks) - 3
             return f"{', '.join(n.name for n in self.networks[:3])} & {left} more!"
-        return ", ".join([g.name for g in self.networks])
+        return ', '.join(g.name for g in self.networks)
 
     @property
     def all_seasons(self) -> str:
-        return "\n".join(
+        return '\n'.join(
             f'{i}. {tv.name}{format_date(tv.air_date, prefix=f", {tv.prefix} ")}'
             f"  ({tv.episode_count or 0} episodes)"
             for i, tv in enumerate(self.seasons, start=1)
@@ -240,77 +276,47 @@ class TVShowDetails:
 
     @property
     def creators(self) -> str:
-        return ", ".join([c.name for c in self.created_by])
+        return ', '.join(c.name for c in self.created_by)
 
     @property
     def humanize_votes(self) -> str:
-        if not self.vote_count:
-            return ""
-        return f"**{self.vote_average:.1f}** ★  ({humanize_number(self.vote_count)} votes)"
+        votes = self.vote_count
+        if not votes:
+            return f':star: **{self.vote_average:.1f}** '
+        num = f'{votes / 1000:.1f}K' if votes > 999 else str(votes)
+        return f':star: **{self.vote_average:.1f}** ({num} votes)'
+
+    @property
+    def media_type(self) -> Literal['movie', 'tv']:
+        return 'tv'
 
     @property
     def next_episode_info(self) -> str:
         if not self.next_episode_to_air:
-            return ""
+            return ''
 
         next_ep = self.next_episode_to_air
-        next_airing = "unsure when it will air guhh!"
+        next_airing = 'ETA unknown!'
         if next_ep.air_date:
-            next_airing = format_date(next_ep.air_date, prefix="likely airing ")
+            next_airing = format_date(next_ep.air_date, prefix='likely airing ')
         return (
-            f"**S{next_ep.season_number or 0}E{next_ep.episode_number or 0}**"
-            f" : {next_airing}\n**Titled as:** {next_ep.name}"
+            f'**S{next_ep.season_number or 0}E{next_ep.episode_number or 0}**'
+            f' : {next_airing}\n**Titled as:** {next_ep.name}'
         )
 
     @property
     def seasons_count(self) -> str:
-        return f"{self.number_of_seasons} ({self.number_of_episodes} episodes)"
+        return f'{self.number_of_seasons} ({self.number_of_episodes} episodes)'
 
     @property
     def title(self) -> str:
-        return self.name or self.original_name
+        return self.name
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> TVShowDetails:
-        n_eta = data.pop("next_episode_to_air", {})
-        l_eta = data.pop("last_episode_to_air", {})
-        created_by = [Creator(**c) for c in data.pop("created_by", [])]
-        credits = [CelebrityCast(**ccs) for ccs in data.pop("credits", {}).get("cast", [])]
-        genres = [Genre(**g) for g in data.pop("genres", [])]
-        seasons = [Season(**s) for s in data.pop("seasons", [])]
-        networks = [Network(**n) for n in data.pop("networks", [])]
-        production_companies = [ProductionCompany(**pcom) for pcom in data.pop("production_companies", [])]
-        production_countries = [ProductionCountry(**pctr) for pctr in data.pop("production_countries", [])]
-        spoken_languages = [Language(**sl) for sl in data.pop("spoken_languages", [])]
-        return cls(
-            next_episode_to_air=EpisodeInfo(**n_eta) if n_eta else None,
-            last_episode_to_air=EpisodeInfo(**l_eta) if l_eta else None,
-            created_by=created_by,
-            credits=credits,
-            genres=genres,
-            seasons=seasons,
-            networks=networks,
-            production_companies=production_companies,
-            production_countries=production_countries,
-            spoken_languages=spoken_languages,
-            **data,
-        )
+    @property
+    def original_title(self):
+        return self.original_name
 
-    @classmethod
-    async def request(
-        cls, session: aiohttp.ClientSession, api_key: str, tvshow_id: Any
-    ) -> MediaNotFound | TVShowDetails:
-        tvshow_data = {}
-        params = {"api_key": api_key, "append_to_response": "credits"}
-        try:
-            async with session.get(f"{API_BASE}/tv/{tvshow_id}", params=params) as resp:
-                if resp.status in [401, 404]:
-                    err_data = await resp.json()
-                    return MediaNotFound(err_data["status_message"], resp.status)
-                if resp.status != 200:
-                    return MediaNotFound("", resp.status)
-                tvshow_data: dict = await resp.json()
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            return MediaNotFound("⚠️ Operation timed out.", 408)
-        tvshow_data["credits"] = tvshow_data.pop("credits", {}).get("cast", [])
-        return dacite.from_dict(data_class=cls, data=tvshow_data)
+    @property
+    def tmdb_url(self):
+        return f'https://themoviedb.org/tv/{self.id}'
+

@@ -1,96 +1,46 @@
 from __future__ import annotations
 
-import asyncio
-import contextlib
-from datetime import datetime
+from datetime import UTC, datetime
 from textwrap import shorten
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 import discord
+import msgspec
 from discord.app_commands import Choice
 from redbot.core import commands
 
-from .api.base import MediaNotFound
+from .api.base import MediaNotFound, multi_search
 from .api.details import MovieDetails, TVShowDetails
-from .api.person import Person as PersonDetails
-from .api.search import MovieSearch, PersonSearch, TVShowSearch
-from .api.suggestions import MovieSuggestions, TVShowSuggestions
-from .utils import format_date, make_person_embed
-from .views import ChoiceView
+from .api.search import MovieSearch, TVShowSearch
+from .utils import format_date
 
 if TYPE_CHECKING:
     from redbot.core.bot import Red
     from redbot.core.commands import Context
 
 
-class PersonFinder(discord.app_commands.Transformer):
-
-    async def convert(self, ctx: Context[Red], argument: str) -> tuple[discord.Message, PersonDetails]:
-        api_key = (await ctx.bot.get_shared_api_tokens("tmdb")).get("api_key", "")
-        results = await PersonSearch.request(ctx.bot.session, api_key, argument.lower())
-        if isinstance(results, MediaNotFound):
-            raise commands.BadArgument(str(results))
-        if not results:
-            raise commands.BadArgument("⛔ No celebrities could be found from given input.")
-        if len(results) == 1:
-            message = None
-            person = await PersonDetails.request(ctx.bot.session, api_key, str(results[0].id))
-        else:
-            options = [
-                discord.SelectOption(label=obj.name, value=str(obj.id), description=shorten(obj.famous_for, 94))
-                for obj in results
-            ]
-            view = ChoiceView(options=options)
-            message = await view.start(
-                ctx,
-                content=f"Found {len(results)} celebrities. Choose one from the dropdown:",
-            )
-            await view.wait()
-            if not view.result:
-                raise commands.BadArgument(f"Aborted. No response from {ctx.author.mention}")
-            person_id = view.result
-            person = await PersonDetails.request(ctx.bot.session, api_key, person_id)
-        if isinstance(person, MediaNotFound):
-            raise commands.BadArgument(str(person))
-        return message, person
-
-    async def transform(self, i: discord.Interaction[Red], value: str):
-        key = (await i.client.get_shared_api_tokens("tmdb")).get("api_key", "")
-        person = await PersonDetails.request(i.client.session, key, value)
-        if isinstance(person, MediaNotFound):
-            await i.response.send_message(str(person), ephemeral=True)
-            return
-        emb = make_person_embed(person, discord.Colour.dark_embed())
-        await i.response.send_message(embed=emb, ephemeral=True)
-        return
-
-    async def autocomplete(self, i: discord.Interaction[Red], value: int | float | str) -> List[Choice]:
-        if not value:
-            return []
-        token = (await i.client.get_shared_api_tokens("tmdb")).get("api_key", "")
-        results = await PersonSearch.request(i.client.session, token, str(value))
-        if not results or isinstance(results, MediaNotFound):
-            return []
-
-        choices = [Choice(name=shorten(f"{p.name} ({p.famous_for})", 94), value=str(p.id)) for p in results]
-        return choices[:24]
-
-
 class MovieFinder(discord.app_commands.Transformer):
+
     async def convert(self, ctx: Context[Red], argument: str):
-        api_key = (await ctx.bot.get_shared_api_tokens("tmdb")).get("api_key", "")
-        results = await MovieSearch.request(ctx.bot.session, api_key, argument.lower())
-        if isinstance(results, MediaNotFound):
-            raise commands.BadArgument(str(results))
+        api_key = (await ctx.bot.get_shared_api_tokens('tmdb')).get('api_key', '')
+        try:
+            all_data = await multi_search(ctx.bot.session, api_key, argument)
+        except MediaNotFound as err:
+            raise commands.BadArgument(str(err)) from err
+
+        results = [
+            msgspec.convert(obj, MovieSearch, strict=False, from_attributes=True)
+            for obj in all_data if obj['media_type'] == 'movie'
+        ]
         if not results:
-            raise commands.BadArgument("⛔ No such movie found from given query.")
+            raise commands.BadArgument('⛔ No such movie found from given query.')
         if len(results) == 1:
             return await MovieDetails.request(ctx.bot.session, api_key, results[0].id)
 
         # https://github.com/Sitryk/sitcogsv3/blob/master/lyrics/lyrics.py#L142
         items = [f"{i}.  {obj.title} ({format_date(obj.release_date, 'd')})" for i, obj in enumerate(results, start=1)]
         prompt: discord.Message = await ctx.send(
-            f"Found below {len(items)} movies. Choose one in 60 seconds:\n\n" + "\n".join(items).replace(" ()", "")
+            f'Found below {len(items)} movies. Choose one in 60 seconds:\n\n' + '\n'.join(items).replace(' ()', '')
         )
 
         def check(msg: discord.Message) -> bool:
@@ -103,62 +53,79 @@ class MovieFinder(discord.app_commands.Transformer):
             )
 
         try:
-            choice = await ctx.bot.wait_for("message", timeout=60, check=check)
-        except asyncio.TimeoutError:
+            choice = await ctx.bot.wait_for('message', timeout=60, check=check)
+        except TimeoutError:
             choice = None
 
-        if choice is None or (choice.content and choice.content.strip() == "0"):
-            with contextlib.suppress(Exception):
+        if choice is None or (choice.content and choice.content.strip() == '0'):
+            try:
                 await prompt.delete()
+            except Exception:
+                pass
             raise commands.BadArgument("‼ You didn't pick a valid choice. Operation cancelled.")
 
-        with contextlib.suppress(Exception):
+        try:
             await prompt.delete()
+        except Exception:
+            pass
         movie_id = results[int(choice.content.strip()) - 1].id
-        if ctx.command and "suggest" in ctx.command.name:
-            return await MovieSuggestions.request(ctx.bot.session, api_key, movie_id)
         return await MovieDetails.request(ctx.bot.session, api_key, movie_id)
 
     async def transform(self, i: discord.Interaction[Red], value: str):
-        key = (await i.client.get_shared_api_tokens("tmdb")).get("api_key", "")
-        if i.command and "suggest" in i.command.name:
-            return await MovieSuggestions.request(i.client.session, key, value)
+        key = (await i.client.get_shared_api_tokens('tmdb')).get('api_key', '')
         return await MovieDetails.request(i.client.session, key, value)
 
-    async def autocomplete(self, i: discord.Interaction[Red], value: int | float | str) -> List[Choice]:
-        token = (await i.client.get_shared_api_tokens("tmdb")).get("api_key", "")
-        results = await MovieSearch.request(i.client.session, token, str(value))
-        if not results or isinstance(results, MediaNotFound):
+    async def autocomplete(self, i: discord.Interaction[Red], value: str) -> list[Choice[str]]:
+        token = (await i.client.get_shared_api_tokens('tmdb')).get('api_key', '')
+        try:
+            all_data = await multi_search(i.client.session, token, value)
+        except MediaNotFound:
+            return []
+
+        results = [
+            msgspec.convert(obj, MovieSearch, strict=False, from_attributes=True)
+            for obj in all_data if obj['media_type'] == 'movie'
+        ]
+        if not results:
             return []
 
         def parser(title: str, date: str | None) -> str:
             if not date:
                 return shorten(title, 94)
-            date = datetime.strptime(date, "%Y-%m-%d").strftime("%d %b, %Y")
+            date = datetime.strptime(date, '%Y-%m-%d').astimezone(UTC).strftime('%d %b, %Y')
             return f"{shorten(title, 75, placeholder=' …')} ({date})"
 
-        choices = [Choice(name=f"{parser(movie.title, movie.release_date)}", value=str(movie.id)) for movie in results]
-        return choices[:24]
+        choices = [Choice(name=f'{parser(movie.title, movie.release_date)}', value=str(movie.id)) for movie in results]
+        return choices[:24] if len(choices) > 25 else choices
 
 
 class TVShowFinder(discord.app_commands.Transformer):
+
     async def convert(self, ctx: Context[Red], argument: str):
-        api_key = (await ctx.bot.get_shared_api_tokens("tmdb")).get("api_key", "")
-        results = await TVShowSearch.request(ctx.bot.session, api_key, argument.lower())
-        if isinstance(results, MediaNotFound):
-            raise commands.BadArgument(str(results))
+        api_key = (await ctx.bot.get_shared_api_tokens('tmdb')).get('api_key', '')
+        try:
+            all_data = await multi_search(ctx.bot.session, api_key, argument)
+        except MediaNotFound as err:
+            raise commands.BadArgument(str(err)) from err
+
+        results = [
+            msgspec.convert(obj, TVShowSearch, strict=False, from_attributes=True)
+            for obj in all_data if obj['media_type'] == 'tv'
+        ]
+
         if not results:
-            raise commands.BadArgument("⛔ No such TV show found from given query.")
+            raise commands.BadArgument('⛔ No such TV show found from given query.')
         if len(results) == 1:
             return await TVShowDetails.request(ctx.bot.session, api_key, results[0].id)
 
         # https://github.com/Sitryk/sitcogsv3/blob/master/lyrics/lyrics.py#L142
         items = [
-            f"{i}.  {v.name or v.original_name}" f" ({format_date(v.first_air_date, 'd', prefix='started on ')})"
+            f"{i}.  {v.name or v.original_name}"
+            f" ({format_date(v.first_air_date, 'd', prefix='started on ')})"
             for i, v in enumerate(results, start=1)
         ]
         prompt: discord.Message = await ctx.send(
-            f"Found below {len(items)} TV shows. Choose one in 60 seconds:\n\n" + "\n".join(items).replace(" ()", "")
+            f'Found below {len(items)} TV shows. Choose one in 60 seconds:\n\n' + '\n'.join(items).replace(' ()', '')
         )
 
         def check(msg: discord.Message) -> bool:
@@ -171,44 +138,53 @@ class TVShowFinder(discord.app_commands.Transformer):
             )
 
         try:
-            choice = await ctx.bot.wait_for("message", timeout=60, check=check)
-        except asyncio.TimeoutError:
+            choice = await ctx.bot.wait_for('message', timeout=60, check=check)
+        except TimeoutError:
             choice = None
 
-        if choice is None or (choice.content and choice.content.strip() == "0"):
-            with contextlib.suppress(Exception):
+        if choice is None or (choice.content and choice.content.strip() == '0'):
+            try:
                 await prompt.delete()
+            except Exception:
+                pass
             raise commands.BadArgument("‼ You didn't pick a valid choice. Operation cancelled.")
 
-        with contextlib.suppress(Exception):
+        try:
             await prompt.delete()
+        except Exception:
+            pass
         tv_id = results[int(choice.content.strip()) - 1].id
-        if ctx.command and "suggest" in ctx.command.name:
-            return await TVShowSuggestions.request(ctx.bot.session, api_key, tv_id)
         return await TVShowDetails.request(ctx.bot.session, api_key, tv_id)
 
     async def transform(self, i: discord.Interaction[Red], value: str):
-        key = (await i.client.get_shared_api_tokens("tmdb")).get("api_key", "")
-        if i.command and "suggest" in i.command.name:
-            return await TVShowSuggestions.request(i.client.session, key, value)
+        key = (await i.client.get_shared_api_tokens('tmdb')).get('api_key', '')
         return await TVShowDetails.request(i.client.session, key, value)
 
-    async def autocomplete(self, i: discord.Interaction[Red], value: int | float | str) -> List[Choice]:
+    async def autocomplete(self, i: discord.Interaction[Red], value: str) -> list[Choice[str]]:
         if not value:
             return []
 
-        token = (await i.client.get_shared_api_tokens("tmdb")).get("api_key", "")
-        results = await TVShowSearch.request(i.client.session, token, str(value))
-        if not results or isinstance(results, MediaNotFound):
+        token = (await i.client.get_shared_api_tokens('tmdb')).get('api_key', '')
+        try:
+            all_data = await multi_search(i.client.session, token, value)
+        except MediaNotFound:
+            return []
+
+        results = [
+            msgspec.convert(obj, TVShowSearch, strict=False, from_attributes=True)
+            for obj in all_data if obj['media_type'] == 'tv'
+        ]
+        if not results:
             return []
 
         def parser(title: str, date: str | None) -> str:
             if not date:
                 return shorten(title, 94)
-            date = datetime.strptime(date, "%Y-%m-%d").strftime("%d %b, %Y")
-            return f"{shorten(title, 75)} (began on {date})"
+            date = datetime.strptime(date, '%Y-%m-%d').astimezone(UTC).strftime('%d %b, %Y')
+            return f'{shorten(title, 75)} (began on {date})'
 
         choices = [
-            Choice(name=f"{parser(tvshow.name, tvshow.first_air_date)}", value=str(tvshow.id)) for tvshow in results
+            Choice(name=f'{parser(tvshow.name, tvshow.first_air_date)}', value=str(tvshow.id)) for tvshow in results
         ]
-        return choices[:24]
+        return choices[:24] if len(choices) > 25 else choices
+
