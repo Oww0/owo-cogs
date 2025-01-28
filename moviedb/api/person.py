@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-#  from typing import TYPE_CHECKING, Any
+import datetime
 
-#  import discord
+import discord
 import msgspec
 from discord.utils import escape_markdown
 
 #  from .base import MediaNotFound as NotFound
 from .constants import CDN_BASE
 
-#  if TYPE_CHECKING:
-    #  import aiohttp
 
 _MAP: dict[str, str] = {'tv': 'TV', 'movie': 'Movie'}
 
@@ -18,15 +16,15 @@ _MAP: dict[str, str] = {'tv': 'TV', 'movie': 'Movie'}
 class BaseCredits(msgspec.Struct):
     adult: bool
     id: int
-    origin_country: list[str] | None
-    name: str | None
-    original_name: str | None
-    title: str | None
-    original_title: str | None
-    episode_count: int | None
-    first_air_date: str | None
-    release_date: str | None
     media_type: str
+    name: str | None = None
+    original_name: str | None = None
+    title: str | None = None
+    original_title: str | None = None
+    episode_count: int | None = None
+    first_air_date: str | None = None
+    release_date: str | None = None
+    origin_country: list[str] = msgspec.field(default_factory=list)
 
     @property
     def clean_title(self) -> str:
@@ -43,7 +41,7 @@ class BaseCredits(msgspec.Struct):
 
 
 class CastCredits(BaseCredits):
-    character: str | None
+    character: str | None = None
 
     @property
     def portray_as(self) -> str:
@@ -57,8 +55,8 @@ class CastCredits(BaseCredits):
 
 
 class CrewCredits(BaseCredits):
-    department: str | None
-    job: str | None
+    department: str | None = None
+    job: str | None = None
 
     @property
     def portray_as(self) -> str:
@@ -81,36 +79,46 @@ class Person(msgspec.Struct, omit_defaults=True):
     name: str
     gender: int
     adult: bool
-    imdb_id: str | None
-    biography: str | None
-    known_for_department: str | None
     popularity: float
-    birthday: str | None
-    deathday: str | None
-    place_of_birth: str | None
-    profile_path: str | None
-    homepage: str | None
-    #  combined_credits: PersonCredits | None
+    imdb_id: str | None = None
+    biography: str | None = None
+    known_for_department: str | None = None
+    birthday: str | None = None
+    deathday: str | None = None
+    place_of_birth: str | None = None
+    profile_path: str | None = None
+    homepage: str | None = None
+    #  combined_credits: PersonCredits | None = None
     also_known_as: list[str] = msgspec.field(default_factory=list)
 
     @property
-    def person_image(self) -> str:
-        return f'{CDN_BASE}{self.profile_path}' if self.profile_path else ''
+    def birth_date(self):
+        return discord.utils.parse_time(self.birthday) if self.birthday else None
 
-    #  @classmethod
-    #  async def request(cls, session: aiohttp.ClientSession, api_key: str, person_id: Any) -> Person:
-        #  try:
-            #  async with session.get(
-                #  f'{API_BASE}/person/{person_id}',
-                #  params={'api_key': api_key, 'append_to_response': 'combined_credits'},
-            #  ) as resp:
-                #  if resp.status in (401, 404):
-                    #  data = await resp.json(loads=discord.utils._from_json)
-                    #  raise NotFound(**data)
-                #  if resp.status != 200:
-                    #  raise NotFound(status_message='No results found.', status_code=resp.status)
-                #  person_data: dict = await resp.json(loads=discord.utils._from_json)
-        #  except Exception:
-            #  raise NotFound(status_message='Operation timed out!', status_code=408) from None
+    @property
+    def death_date(self):
+        return discord.utils.parse_time(self.deathday) if self.deathday else None
 
-        #  return dacite.from_dict(data_class=cls, data=person_data)
+    @property
+    def age(self):
+        return self.calculate_age()
+
+    def calculate_age(self):
+        birthday = self.birthday
+        if not birthday:
+            return None
+
+        birth_date = datetime.date.fromisoformat(birthday)
+        today = discord.utils.utcnow()
+
+        age = today.year - birth_date.year
+
+        if today.month < birth_date.month or (today.month == birth_date.month and today.day < birth_date.day):
+            age -= 1
+
+        return age
+
+    @property
+    def image_url(self) -> str | None:
+        return f'{CDN_BASE}{self.profile_path}' if self.profile_path else None
+

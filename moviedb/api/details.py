@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+import logging
 from typing import TYPE_CHECKING, Literal
 
 import discord
@@ -11,11 +11,14 @@ from .base import CelebrityCast, Genre, Language, ProductionCompany, ProductionC
 from ..utils import format_date
 
 if TYPE_CHECKING:
+    from datetime import datetime
     from redbot.core.bot import Red
 
     from ..types.imdbapi import IMDbData
 
 MISSING = discord.utils.MISSING
+
+log = logging.getLogger('movie.api.details')
 
 
 class MovieCrew(msgspec.Struct, omit_defaults=True):
@@ -24,12 +27,12 @@ class MovieCrew(msgspec.Struct, omit_defaults=True):
     id: int
     known_for_department: str
     name: str
-    original_name: str | None
     popularity: float
-    profile_path: str | None
     credit_id: str
     department: str
     job: str
+    original_name: str | None = None
+    profile_path: str | None = None
 
     @property
     def tmdb_url(self):
@@ -47,19 +50,19 @@ class VideoResult(msgspec.Struct, omit_defaults=True):
 
 class CommonMixin(msgspec.Struct, kw_only=True, omit_defaults=True):
     adult: bool
-    backdrop_path: str | None
     credits: Credits
-    homepage: str | None
     id: int
     original_language: str
-    overview: str | None
-    popularity: float | None
-    poster_path: str | None
     status: str
-    tagline: str | None
-    vote_average: float | None
-    vote_count: int | None
     videos: VideoResult
+    homepage: str | None = None
+    overview: str | None = None
+    popularity: float | None = None
+    backdrop_path: str | None = None
+    poster_path: str | None = None
+    tagline: str | None = None
+    vote_average: float | None = None
+    vote_count: int | None = None
     genres: list[Genre] = msgspec.field(default_factory=list)
     production_companies: list[ProductionCompany] = msgspec.field(default_factory=list)
     production_countries: list[ProductionCountry] = msgspec.field(default_factory=list)
@@ -91,14 +94,14 @@ class CommonMixin(msgspec.Struct, kw_only=True, omit_defaults=True):
 
 
 class MovieDetails(CommonMixin, omit_defaults=True):
-    budget: int | None
-    imdb_id: str | None
-    original_title: str
-    release_date: str | None
-    revenue: int | None
-    runtime: int | None
     title: str
+    original_title: str
     video: bool
+    budget: int | None = None
+    imdb_id: str | None = None
+    release_date: str | None = None
+    revenue: int | None = None
+    runtime: int | None = None
     spoken_languages: list[Language] = msgspec.field(default_factory=list)
     origin_country: list[str] = msgspec.field(default_factory=list)
 
@@ -132,7 +135,7 @@ class MovieDetails(CommonMixin, omit_defaults=True):
         if not votes:
             return f':star: **{self.vote_average:.1f}** '
         num = f'{votes / 1000:.1f}K' if votes > 999 else str(votes)
-        return f':star: **{self.vote_average:.1f}** ({num} votes)'
+        return f':star: **{self.vote_average:.1f}**/10 ({num} votes)'
 
     @property
     def imdb_url(self):
@@ -146,23 +149,46 @@ class MovieDetails(CommonMixin, omit_defaults=True):
     def tmdb_url(self):
         return f'https://themoviedb.org/movie/{self.id}'
 
-    @classmethod
-    async def get_imdb_rating(cls, bot: Red):
-        if not cls.imdb_id:
+    async def get_imdb_rating(self, bot: Red):
+        if not self.imdb_id:
             return 0.0
 
-        from .constants import IMDBAPI_GQL_QUERY
+        url = "https://graph.imdbapi.dev/v1"
+        headers = {
+            'accept': 'application/json, multipart/mixed',
+            'content-type': 'application/json',
+            'origin': 'https://imdbapi.dev',
+            "referer": 'https://imdbapi.dev/'
+        }
 
+        query = """
+        query($IMDB_ID: ID!) {
+            title(id: $IMDB_ID) {
+                id
+                type
+                primary_title
+                start_year
+                plot
+                genres
+                rating {
+                    aggregate_rating
+                    votes_count
+                }
+            }
+        }
+        """
+
+        payload = {
+            "query": query,
+            "variables": {"IMDB_ID": self.imdb_id}
+        }
         try:
-            async with bot.session.post(
-                'https://graph.imdbapi.dev/v1',
-                json={'query': IMDBAPI_GQL_QUERY, 'variables': {"IMDB_ID": cls.imdb_id}},
-                headers={'user-agent': 'merlin @ discord (user_id: 830676830419157002)'}
-            ) as r:
+            async with bot.session.post(url, json=payload, headers=headers) as r:
                 if r.status != 200:
                     return 0.0
                 data: dict[Literal['data'], IMDbData] = await r.json()
-        except Exception:
+        except Exception as err:
+            bot._notify_owners(str(err))
             return 0.0
 
         try:
@@ -177,64 +203,64 @@ class Creator(msgspec.Struct):
     credit_id: str
     name: str
     gender: int
-    profile_path: str | None
+    profile_path: str | None = None
 
 
 class EpisodeInfo(msgspec.Struct):
     id: int
     name: str
     overview: str
-    vote_average: float | None
-    vote_count: int | None
-    air_date: str | None
     episode_number: int
     production_code: str
-    runtime: int | None
-    season_number: int
-    still_path: str | None
-    show_id: int | None
+    vote_average: float | None = None
+    vote_count: int | None = None
+    air_date: str | None = None
+    runtime: int | None = None
+    season_number: int = 0
+    still_path: str | None = None
+    show_id: int | None = None
 
 
 class Network(msgspec.Struct):
     id: int
     name: str
-    logo_path: str | None
-    origin_country: str | None
+    logo_path: str | None = None
+    origin_country: str | None = None
 
 
 class Season(msgspec.Struct, omit_defaults=True):
     id: int
     name: str
-    air_date: str | None
     overview: str
     episode_count: int
-    poster_path: str | None
+    air_date: str | None = None
+    poster_path: str | None = None
     season_number: int = 0
     vote_average: float = 0.0
 
     @property
     def release_date(self) -> datetime | None:
-        return datetime.fromisoformat(self.air_date) if self.air_date else None
+        return discord.utils.parse_time(self.air_date) if self.air_date else None
 
     @property
     def prefix(self) -> str:
         if not self.release_date:
             return ''
-        return 'airing' if self.release_date.timestamp() > utcnow().timestamp() else 'aired'
+        return 'airing' if self.release_date.timestamp() > utcnow().timestamp() else 'began'
 
 
-class TVShowDetails(CommonMixin, omit_defaults=True):
-    first_air_date: str | None
-    in_production: bool
-    last_air_date: str | None
-    last_episode_to_air: EpisodeInfo | None
+class TVShowDetails(CommonMixin, kw_only=True, omit_defaults=True):
     name: str
-    next_episode_to_air: EpisodeInfo | None
-    number_of_episodes: int | None
-    number_of_seasons: int | None
-    original_language: str | None
     original_name: str
-    type: str | None
+    in_production: bool
+    first_air_date: str | None = None
+    last_air_date: str | None = None
+    last_episode_to_air: EpisodeInfo | None = None
+    next_episode_to_air: EpisodeInfo | None = None
+    number_of_episodes: int | None = None
+    number_of_seasons: int | None = None
+    original_language: str | None = None
+    type: str | None = None
     created_by: list[Creator] = msgspec.field(default_factory=list)
     episode_run_time: list[int] = msgspec.field(default_factory=list)
     seasons: list[Season] = msgspec.field(default_factory=list)
@@ -270,7 +296,7 @@ class TVShowDetails(CommonMixin, omit_defaults=True):
     def all_seasons(self) -> str:
         return '\n'.join(
             f'{i}. {tv.name}{format_date(tv.air_date, prefix=f", {tv.prefix} ")}'
-            f"  ({tv.episode_count or 0} episodes)"
+            f'  ({tv.episode_count or 0} episodes)'
             for i, tv in enumerate(self.seasons, start=1)
         )
 
@@ -284,7 +310,7 @@ class TVShowDetails(CommonMixin, omit_defaults=True):
         if not votes:
             return f':star: **{self.vote_average:.1f}** '
         num = f'{votes / 1000:.1f}K' if votes > 999 else str(votes)
-        return f':star: **{self.vote_average:.1f}** ({num} votes)'
+        return f':star: **{self.vote_average:.1f}**/10 ({num} votes)'
 
     @property
     def media_type(self) -> Literal['movie', 'tv']:

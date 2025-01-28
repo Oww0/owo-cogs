@@ -5,6 +5,13 @@ API_BASE = 'https://api.themoviedb.org/3'
 CDN_BASE = 'https://image.tmdb.org/t/p/original'
 TMDB_ICON = 'https://i.imgur.com/sSE7Usn.png'
 
+GENDERS = (
+    '',
+    '\N{FEMALE SIGN}\N{VARIATION SELECTOR-16}',
+    '\N{MALE SIGN}\N{VARIATION SELECTOR-16}',
+    '\N{MALE WITH STROKE AND MALE AND FEMALE SIGN}',
+)
+
 
 MV_IDS = Literal[28, 12, 16, 35, 80, 99, 18, 10751, 14, 36, 27, 10402, 9648, 10749, 878, 10770, 53, 10752, 37]
 TV_IDS = Literal[10759, 16, 35, 80, 99, 18, 10751, 10762, 9648, 10763, 10764, 10765, 10766, 10767, 10768, 37]

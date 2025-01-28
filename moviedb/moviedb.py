@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -80,13 +81,26 @@ class MovieDB(commands.Cog):
             person = await self.fetch_person(ctx.bot, api_key, person_id)
         except MediaNotFound as err:
             raise commands.BadArgument(str(err)) from None
+
         emb1 = make_person_embed(person, COLOR)
+
+        try:
+            from notsobot.utils import get_prominent_color
+
+            async with ctx.bot.session.get(person.image_url) as r:
+                buf = await r.read()
+            clr = await asyncio.to_thread(get_prominent_color, buf)
+        except Exception:
+            pass
+        else:
+            emb1.colour = clr
+
         count = len(results)
         if count > 1:
             view = ChoiceView(
                 options=[
                     discord.SelectOption(
-                        label=obj.name,
+                        label=f'{obj.gender_emoji} {obj.name}',
                         value=str(obj.id),
                         description=obj.famous_for if len(obj.famous_for) < 100 else f'{obj.famous_for[:96]}...',
                     )
@@ -96,14 +110,15 @@ class MovieDB(commands.Cog):
                 result_id=person_id,
                 placeholder=f'Check out other {count - 1} celebrities...'
             )
-            message = await ctx.send(embeds=[emb1], view=view)
+            out = await ctx.send(embeds=[emb1], view=view)
             await view.wait()
             try:
-                await message.edit(view=None)
+                await out.edit(view=None)
             except Exception:
+                logger.exception('Error editing message: %s\n %s', out.jump_url, out.to_dict())
                 pass
-
-        await ctx.send(embeds=[emb1])
+        else:
+            await ctx.send(embed=emb1)
 
     @staticmethod
     async def fetch_person(bot: Red, key: str, person_id: int) -> Person:
@@ -169,7 +184,7 @@ class MovieDB(commands.Cog):
             raise commands.BadArgument('⛔ No movie or TV series found, only celebs/crew people.')
 
         data = await fetch_multi(ctx.bot, api_key, item_id=results[0].id, media_type=results[0].media_type)
-        em1 = gen_movie_or_tvshow_embed(data)
+        em1 = await gen_movie_or_tvshow_embed(data, bot=ctx.bot)
         #  embeds.append(em1)
 
         view = TVMovieView(author_id=ctx.author.id, source=data)
@@ -185,6 +200,7 @@ class MovieDB(commands.Cog):
         try:
             await view.message.edit(view=None)
         except Exception:
+            logger.exception('Error editing message: %s\n %s', view.message.jump_url, view.message.to_dict())
             pass
 
     @movie.error

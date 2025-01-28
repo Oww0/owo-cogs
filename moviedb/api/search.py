@@ -4,38 +4,44 @@ from __future__ import annotations
 from typing import Literal
 
 import msgspec
-from redbot.core.utils.chat_formatting import humanize_list
 
-from .constants import MOVIE_GENRES, TV_GENRES
+from .constants import GENDERS, MOVIE_GENRES, TV_GENRES
 
 #  if TYPE_CHECKING:
     #  from aiohttp import ClientSession
+
+
+class KnownFor(msgspec.Struct):
+    name: str | None = None
+    title: str | None = ''
+
+    @property
+    def human_title(self):
+        return self.name or self.title or ''
 
 
 class PersonSearch(msgspec.Struct, omit_defaults=True):
     adult: bool
     id: int
     name: str
-    gender: int
-    media_type: str
-    popularity: float
-    known_for_department: str | None
-    original_name: str | None
-    profile_path: str | None
-    known_for: list[MovieSearch | TVShowSearch] = msgspec.field(default_factory=list)
+    gender: Literal[0, 1, 2, 3]
+    media_type: Literal['person']
+    original_name: str | None = None
+    known_for: list[KnownFor] = msgspec.field(default_factory=list)
 
     @property
     def famous_for(self) -> str:
         if not self.known_for:
             return ''
-        return f'known for {humanize_list([x.title for x in self.known_for])}'
+        return f'known for {", ".join(x.human_title for x in self.known_for)}'
+
+    @property
+    def gender_emoji(self):
+        return GENDERS[self.gender]
 
 
-class CommonSearchMixinForMovieTV(msgspec.Struct):
-    backdrop_path: str | None
+class CommonSearchMixinForMovieTV(msgspec.Struct, kw_only=True):
     id: int
-    overview: str | None
-    poster_path: str | None
     media_type: Literal['movie', 'tv']
     adult: bool
     original_language: str
@@ -43,6 +49,9 @@ class CommonSearchMixinForMovieTV(msgspec.Struct):
     popularity: float
     vote_average: float
     vote_count: int
+    backdrop_path: str | None = None
+    overview: str | None = None
+    poster_path: str | None = None
 
     @property
     def human_type(self):
@@ -57,8 +66,8 @@ class CommonSearchMixinForMovieTV(msgspec.Struct):
 class MovieSearch(CommonSearchMixinForMovieTV):
     title: str
     original_title: str
-    release_date: str | None
-    video: bool | None
+    release_date: str | None = None
+    video: bool | None = None
 
     @property
     def genres(self):
@@ -75,7 +84,7 @@ class MovieSearch(CommonSearchMixinForMovieTV):
 class TVShowSearch(CommonSearchMixinForMovieTV):
     name: str
     original_name: str
-    first_air_date: str | None
+    first_air_date: str | None = None
 
     @property
     def genres(self):

@@ -14,7 +14,7 @@ from redbot.core.utils.chat_formatting import pagify
 from redbot.core.utils.embed import random_colour
 
 from .api.base import CDN_BASE, CelebrityCast, MediaNotFound, format_date
-from .api.constants import API_BASE, TMDB_ICON
+from .api.constants import API_BASE, GENDERS, TMDB_ICON
 from .api.details import MovieDetails, TVShowDetails
 
 if TYPE_CHECKING:
@@ -25,13 +25,6 @@ if TYPE_CHECKING:
     from .types.movie import MovieDetails as MoviePayload
     from .types.tvshow import TVShow as TVShowPayload
 
-GENDERS = (
-    '',
-    '\N{FEMALE SIGN}\N{VARIATION SELECTOR-16}',
-    '\N{MALE SIGN}\N{VARIATION SELECTOR-16}',
-    '\N{MALE WITH STROKE AND MALE AND FEMALE SIGN}',
-)
-
 logger = logging.getLogger('moviedb.utils')
 
 
@@ -40,7 +33,7 @@ def natural_size(value: int) -> str:
     if value < 1_000:
         return str(value)
 
-    units: tuple[str, ...] = ('', 'K', ' million', ' billion')
+    units: tuple[str, ...] = ('', 'K', 'M', 'B')
     power = int(math.log(max(abs(value), 1), 1000))
     return f'{value / (1000 ** power):.1f}{units[power]}'
 
@@ -49,24 +42,26 @@ def make_person_embed(person: Person, colour: discord.Colour | int) -> discord.E
     emb = discord.Embed(colour=colour, title=person.name)
     # emb.description = shorten(person.biography or "", 500, placeholder=" …")
     emb.url = f'https://themoviedb.org/person/{person.id}'
-    emb.set_thumbnail(url=person.person_image)
+    emb.set_thumbnail(url=person.image_url)
     out = io.StringIO()
     if bio := person.biography:
-        out.write(f"{bio[:500] + ' …' if len(bio) > 500 else bio}\n\n")
-    out.write(f'**` Known for  `**  ` {person.known_for_department} `\n')
-    if person.place_of_birth:
-        out.write(f'**` Birthplace `**  ` {person.place_of_birth} `\n')
+        out.write(f"{bio[:500] + '...' if len(bio) > 500 else bio}\n\n")
+    out.write(f'- **Known for:**  {person.known_for_department}\n')
     if dob := person.birthday:
-        out.write(f"**` Birthday   `**  {format_date(dob, 'D')} ({format_date(dob)})\n")
+        out.write(f"- **Born:**  {format_date(dob, 'D')} (age {person.age})\n")
+    if person.place_of_birth:
+        out.write(f'- **POB:**  {person.place_of_birth}\n')
     if rip := person.deathday:
-        out.write(f"**` Died on    `**  {format_date(rip, 'D')} ({format_date(rip)})\n")
+        out.write(f"- **Died:**  {format_date(rip, 'D')} ({format_date(rip)})\n")
     ext_links = []
     if person.imdb_id:
-        ext_links.append(f'[` IMDb `](https://imdb.com/name/{person.imdb_id})')
+        ext_links.append(f'[IMDb](https://imdb.com/name/{person.imdb_id})')
     if person.homepage:
-        ext_links.append(f'[` Website `]({person.homepage})\n')
+        ext_links.append(f'[Website]({person.homepage})')
+    name = person.name.replace(' ', '_')
+    ext_links.append(f'[Wikipedia](https://en.wikipedia.org/wiki/{name})')
     if ext_links:
-        out.write(f"**` Links      `**  {'  '.join(ext_links)}\n")
+        out.write(f"- **Links:**  {' • '.join(ext_links)}\n")
     emb.description = out.getvalue()
     out.close()
     ext_links.clear()
@@ -97,7 +92,7 @@ def parse_credits(cast_data: list[CelebrityCast], colour: discord.Colour | int, 
     return pages
 
 
-def make_movie_embed(data: MovieDetails, colour: discord.Colour | int) -> discord.Embed:
+async def make_movie_embed(data: MovieDetails, colour: discord.Colour | int, bot: Red) -> discord.Embed:
     em = discord.Embed(colour=random_colour() or colour)
     year, _, _ = (data.release_date or '').partition('-')
     year = f' ({year})' if year else ''
@@ -109,9 +104,6 @@ def make_movie_embed(data: MovieDetails, colour: discord.Colour | int) -> discor
         out.write(f'-# *{data.tagline}*\n')
     if data.overview:
         out.write(f'\n{data.get_short_overview(200)}\n\n')
-    #  if imdb_id := data.imdb_id:
-        #  out.write(f'- **[IMDb](https://imdb.com/title/{imdb_id})**\n')
-    #  em.url = f'https://themoviedb.org/movie/{data.id}'
     em.set_image(url=f"{CDN_BASE}{data.backdrop_path or '/'}")
     em.set_thumbnail(url=f"{CDN_BASE}{data.poster_path or '/'}")
     if data.humanize_runtime:
@@ -123,10 +115,14 @@ def make_movie_embed(data: MovieDetails, colour: discord.Colour | int) -> discor
         state = 'Released' if utcnow() > dt else 'Upcoming'
         out.write(f'- **{state}:**  {format_dt(dt, style="R")} • {format_dt(dt, style="d")}{oc}\n')
     if data.budget:
-        out.write(f'- **Budget:**  (USD) ${natural_size(data.budget)}\n')
+        out.write(f'- **Budget:**  ${natural_size(data.budget)}\n')
     if data.revenue:
-        out.write(f'- **Revenue:**  (USD) ${natural_size(data.revenue)}\n')
-    if data.vote_average and data.vote_count:
+        out.write(f'- **Revenue:**  ${natural_size(data.revenue)}\n')
+
+    imdb_rating = await data.get_imdb_rating(bot)
+    if imdb_rating:
+        out.write(f'- **IMDb rating:**  :star: **{imdb_rating}**/10\n')
+    elif data.vote_average and data.vote_count:
         out.write(f'- **Rating:**  {data.humanize_votes}\n')
     if data.genres:
         out.write(f'- **Genres:**  {data.all_genres}\n')
@@ -155,7 +151,8 @@ def make_movie_embed(data: MovieDetails, colour: discord.Colour | int) -> discor
     return em
 
 
-def make_tvshow_embed(data: TVShowDetails, colour: discord.Colour | int) -> discord.Embed:
+# this needs to be async function for parity with above function which fetches imdb ratings
+async def make_tvshow_embed(data: TVShowDetails, colour: discord.Colour | int, *, bot: Red): # noqa
     em = discord.Embed(colour=random_colour() or colour)
     out = io.StringIO()
     if data.tagline:
@@ -167,22 +164,24 @@ def make_tvshow_embed(data: TVShowDetails, colour: discord.Colour | int) -> disc
     year = f' ({year})' if year else ''
     em.set_author(name=f'{data.title} {year}', url=data.tmdb_url)
     em.set_image(url=f"{CDN_BASE}{data.backdrop_path or '/'}")
-    em.set_thumbnail(url=f"{CDN_BASE}{data.poster_path or '/'}")
+    #  em.set_thumbnail(url=f"{CDN_BASE}{data.poster_path or '/'}")
     if data.created_by:
         s = 's' if len(data.created_by) > 1 else ''
         out.write(f'- **Creator{s}:**  {data.creators}\n')
     if data.status:
         out.write(f'- **Status:**  {data.status} ({data.type})\n')
+    if data.vote_average and data.vote_count:
+        out.write(f'- **Rating:**  {data.humanize_votes}\n')
     #  if data.in_production:
         #  out.write('- **In production:**  ✅ Yes\n')
     if first_air_date := data.first_air_date:
         out.write(f'- **First aired:**  {format_date(first_air_date)}\n')
     if last_air_date := data.last_air_date:
         out.write(f'- **Last aired:**  {format_date(last_air_date)}\n')
-    if data.number_of_seasons:
-        out.write(f'- **Season{"s" if data.number_of_seasons > 1 else ""}:**  {data.seasons_count}\n')
+    #  if data.number_of_seasons:
+        #  out.write(f'- **Season{"s" if data.number_of_seasons > 1 else ""}:**  {data.seasons_count}\n')
     if runtime := data.episode_run_time:
-        out.write(f'- **Avg. episode runtime:**  {runtime[0]} minutes\n')
+        out.write(f'- **Avg. runtime:**  {runtime[0]} minutes\n')
     if data.genres:
         out.write(f'- **Genres:**  {data.all_genres}\n')
     #  if data.vote_average and data.vote_count:
@@ -190,7 +189,10 @@ def make_tvshow_embed(data: TVShowDetails, colour: discord.Colour | int) -> disc
     if data.networks:
         out.write(f'- **Networks:**  {data.all_networks}\n')
     if data.spoken_languages:
-        out.write(f'- **Spoken languages:**  {data.all_spoken_languages}\n')
+        en_only = len(data.spoken_languages) == 1 and data.spoken_languages[0].iso_639_1 == 'en'
+        if not en_only:
+            s = 's' if len(data.spoken_languages) > 1 else ''
+            out.write(f'- **Language{s}:**  {data.all_spoken_languages}\n')
     if data.production_companies:
         s = 's' if len(data.production_companies) > 1 else ''
         out.write(f'- **Studio{s}:**  {data.all_production_companies}\n')
@@ -205,11 +207,11 @@ def make_tvshow_embed(data: TVShowDetails, colour: discord.Colour | int) -> disc
     return em
 
 
-def gen_movie_or_tvshow_embed(data: MovieDetails | TVShowDetails):
+async def gen_movie_or_tvshow_embed(data: MovieDetails | TVShowDetails, *, bot: Red):
     if isinstance(data, MovieDetails):
-        return make_movie_embed(data, 0)
+        return await make_movie_embed(data, 0, bot=bot)
     if isinstance(data, TVShowDetails):
-        return make_tvshow_embed(data, 0)
+        return await make_tvshow_embed(data, 0, bot=bot)
 
 
 async def fetch_movie(session: ClientSession, api_key: str, movie_id: int | str):
@@ -253,27 +255,21 @@ async def fetch_tv_show(session: ClientSession, api_key: str, tvshow_id: int | s
 
 async def fetch_multi(bot: Red, key: str, *, item_id: int, media_type: Literal['movie', 'tv']):
     if media_type == 'movie':
-        try:
-            obj = await fetch_movie(bot.session, key, item_id)
-        except MediaNotFound as err:
-            raise err
+        obj = await fetch_movie(bot.session, key, item_id)
         try:
             movie = msgspec.convert(obj, MovieDetails, strict=False, from_attributes=True)
-        except Exception as ee:
+        except Exception:
             logger.debug('%s', obj)
-            logger.error('msgspec convert failed for movie %s:', item_id, exc_info=ee)
+            logger.exception('msgspec convert failed for movie %s:', item_id)
             movie: MovieDetails = Box(obj)  # type: ignore
         return movie
     elif media_type == 'tv':
-        try:
-            obj = await fetch_tv_show(bot.session, key, item_id)
-        except MediaNotFound as err:
-            raise err
+        obj = await fetch_tv_show(bot.session, key, item_id)
         try:
             tvshow = msgspec.convert(obj, TVShowDetails, strict=False, from_attributes=True)
-        except Exception as ee:
+        except Exception:
             logger.debug('%s', obj)
-            logger.error('msgspec convert failed for tvshow %s:', item_id, exc_info=ee)
+            logger.exception('msgspec convert failed for tvshow %s:', item_id)
             tvshow: TVShowDetails = Box(obj)  # type: ignore
         return tvshow
 

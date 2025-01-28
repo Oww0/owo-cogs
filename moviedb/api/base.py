@@ -46,30 +46,30 @@ class MediaNotFound(BaseException):
 
 
 class BaseSearch(msgspec.Struct):
-    backdrop_path: str | None
     id: int
-    overview: str | None
     adult: bool
     popularity: float
-    poster_path: str | None
     media_type: Literal['movie', 'tv', 'person']
     vote_count: int
     vote_average: float
+    backdrop_path: str | None = None
+    overview: str | None = None
+    poster_path: str | None = None
 
 
 class CelebrityCast(msgspec.Struct):
     adult: bool
-    gender: int | None
     id: int
     known_for_department: str
     name: str
     original_name: str
-    popularity: float | None
-    profile_path: str | None
-    #  cast_id: int | None
     character: str
     credit_id: str
     order: int
+    gender: Literal[0, 1, 2, 3] | None = None
+    popularity: float | None = None
+    profile_path: str | None = None
+    #  cast_id: int | None = None
 
     @property
     def tmdb_url(self):
@@ -84,8 +84,8 @@ class Genre(msgspec.Struct):
 class ProductionCompany(msgspec.Struct):
     id: int
     name: str
-    logo_path: str | None
-    origin_country: str | None
+    logo_path: str | None = None
+    origin_country: str | None = None
 
 
 class ProductionCountry(msgspec.Struct):
@@ -96,7 +96,7 @@ class ProductionCountry(msgspec.Struct):
 class Language(msgspec.Struct):
     name: str
     iso_639_1: str
-    english_name: str | None
+    english_name: str | None = None
 
     def __str__(self) -> str:
         return self.english_name or self.name

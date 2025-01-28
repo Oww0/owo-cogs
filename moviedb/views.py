@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import TYPE_CHECKING, Literal, Optional, Self, Union, cast
+from typing import TYPE_CHECKING, Literal, Self, cast
 
 import cachebox
 import discord
@@ -9,7 +10,7 @@ import msgspec
 from redbot.core.utils.views import ListPages
 from box.box import Box
 from redbot.core.utils.embed import random_colour
-#  from redbot.core.utils.menus import EphemeralPagesView
+from redbot.core.utils.menus import EphemeralPagesView
 
 from .api.base import MediaNotFound
 from .api.constants import API_BASE, CDN_BASE, TMDB_ICON
@@ -36,7 +37,7 @@ class OfferSelect(discord.ui.Select):
     async def callback(self, i: Interaction[Red]) -> None:
         value = int(self.values[0])
         if value == self.view.result:
-            await i.response.send_message('Thats what is being currently shown :P', ephemeral=True)
+            await i.followup.send('Thats what is being currently shown :P', ephemeral=True)
             return
 
         self.view.result = value
@@ -45,19 +46,35 @@ class OfferSelect(discord.ui.Select):
             if i.user.id == self.view.author_id:
                 await i.edit_original_response(embed=em, view=self.view)
             else:
-                await i.response.send_message(embed=em, ephemeral=True)
+                await i.followup.send(embed=em, ephemeral=True)
             return
 
         try:
             person = await self.view.fetch_person(i, value)
         except MediaNotFound as err:
-            await i.response.send_message(str(err), ephemeral=True)
+            await i.followup.send(str(err), ephemeral=True)
             return
+
         em = make_person_embed(person, random_colour())
+
+        try:
+            from notsobot.utils import get_prominent_color
+
+            async with i.client.session.get(person.image_url) as r:
+                buf = await r.read()
+            clr = await asyncio.to_thread(get_prominent_color, buf)
+        except Exception:
+            pass
+        else:
+            em.colour = clr
+
+        # cache the embed
+        self.view._cache.insert(person.id, em)
+
         if i.user.id == self.view.author_id:
             await i.edit_original_response(embed=em, view=self.view)
         else:
-            await i.response.send_message(embed=em, ephemeral=True)
+            await i.followup.send(embed=em, ephemeral=True)
         return
 
 
@@ -81,6 +98,10 @@ class ChoiceView(discord.ui.View):
         self.result: int = result_id
         self._cache: cachebox.Cache[int, discord.Embed] = cachebox.Cache(0)
         self.add_item(OfferSelect(options=options, placeholder=placeholder))
+
+    async def interaction_check(self, i: Interaction, /) -> bool:
+        await i.response.defer(ephemeral=True)
+        return True
 
     async def on_error(self, i: Interaction[Red], error: Exception, item: discord.ui.Item[Self]):
         self.stop()
@@ -129,11 +150,11 @@ class CastButton(discord.ui.Button):
         self,
         *,
         style: discord.ButtonStyle = discord.ButtonStyle.secondary,
-        label: Optional[str] = None,
+        label: str | None = None,
         disabled: bool = False,
-        custom_id: Optional[str] = None,
-        emoji: Optional[Union[str, discord.Emoji, discord.PartialEmoji]] = None,
-        row: Optional[int] = None,
+        custom_id: str | None = None,
+        emoji: str | discord.Emoji | discord.PartialEmoji = None,
+        row: int | None = None,
     ):
         super().__init__(
             style=style,
@@ -147,7 +168,7 @@ class CastButton(discord.ui.Button):
     async def callback(self, itx: Interaction[Red]) -> None:
         item = self.view.current_item
         if not item.cast:
-            await itx.response.send_message(
+            await itx.followup.send(
                 'Looks like TMDB is missing cast data for this one, someone go update xD',
                 ephemeral=True,
             )
@@ -165,8 +186,6 @@ class CastButton(discord.ui.Button):
             )
             pages.append(em)
 
-        from lyrics.views import InteractionPaginationView as EphemeralPagesView
-
         await EphemeralPagesView(ListPages(pages), ctx=itx).start(itx, ephemeral=True)
 
 
@@ -177,11 +196,11 @@ class CrewButton(discord.ui.Button):
         self,
         *,
         style: discord.ButtonStyle = discord.ButtonStyle.secondary,
-        label: Optional[str] = None,
+        label: str | None = None,
         disabled: bool = False,
-        custom_id: Optional[str] = None,
-        emoji: Optional[Union[str, discord.Emoji, discord.PartialEmoji]] = None,
-        row: Optional[int] = None,
+        custom_id: str | None = None,
+        emoji: str | discord.Emoji | discord.PartialEmoji = None,
+        row: int | None = None,
     ):
         super().__init__(
             style=style,
@@ -195,8 +214,8 @@ class CrewButton(discord.ui.Button):
     async def callback(self, itx: Interaction[Red]) -> None:
         item = self.view.current_item
         if not item.crew:
-            await itx.response.send_message(
-                'Looks like TMDB is missing cast data for this one, someone go update xD',
+            await itx.followup.send(
+                'Looks like TMDB is missing crew data for this one, someone go update xD',
                 ephemeral=True,
             )
 
@@ -213,8 +232,6 @@ class CrewButton(discord.ui.Button):
             )
             pages.append(em)
 
-        from lyrics.views import InteractionPaginationView as EphemeralPagesView
-
         await EphemeralPagesView(ListPages(pages), ctx=itx).start(itx, ephemeral=True)
 
 
@@ -225,11 +242,11 @@ class TrailerButton(discord.ui.Button):
         self,
         *,
         style: discord.ButtonStyle = discord.ButtonStyle.secondary,
-        label: Optional[str] = None,
+        label: str | None = None,
         disabled: bool = False,
-        custom_id: Optional[str] = None,
-        emoji: Optional[Union[str, discord.Emoji, discord.PartialEmoji]] = None,
-        row: Optional[int] = None,
+        custom_id: str | None = None,
+        emoji: str | discord.Emoji | discord.PartialEmoji = None,
+        row: int | None = None,
     ):
         super().__init__(
             style=style,
@@ -247,13 +264,11 @@ class TrailerButton(discord.ui.Button):
             return
 
         pages: list[str] = []
-        for obj in sorted(item.videos.results, key=lambda x: x.publish_date):
-            pages.append(
-                f'{obj.site_emoji} **{obj}** | <:clock:1266353462325547008> Published '
-                f'{discord.utils.format_dt(obj.publish_date, "R")}'
-            )
-
-        from lyrics.views import InteractionPaginationView as EphemeralPagesView
+        pages.extend(
+            f'{obj.site_emoji} **{obj}** | <:clock:1266353462325547008> Published '
+            f'{discord.utils.format_dt(obj.publish_date, "R")}'
+            for obj in sorted(item.videos.results, key=lambda x: x.publish_date)
+        )
 
         await EphemeralPagesView(ListPages(pages), ctx=itx).start(itx, ephemeral=True)
 
@@ -273,10 +288,10 @@ class TVMovieSelect(discord.ui.Select):
             mtype = cast(Literal['movie', 'tv'], mtype)
         value = int(iid)
         if value == self.view.current_item.id:
-            await i.response.send_message('That entry is currently shown in above embed xD', ephemeral=True)
+            await i.followup.send('That entry is currently shown in above embed xD', ephemeral=True)
             return
         if i.user.id != self.view.author_id:
-            await i.response.send_message(
+            await i.followup.send(
                 f'Only <@{self.view.author_id}> can use this dropdown. You can use the buttons :D',
                 ephemeral=True,
             )
@@ -285,7 +300,7 @@ class TVMovieSelect(discord.ui.Select):
     #  async def process_send(self, i: Interaction[Red], value: int):
         cache = self.view._cache.get(value)
         if cache:
-            em1 = gen_movie_or_tvshow_embed(cache)
+            em1 = await gen_movie_or_tvshow_embed(cache, bot=i.client)
             self.view.current_item = cache
             self.view._update_buttons()
             await self.view.message.edit(embeds=[em1], view=self.view)
@@ -293,7 +308,7 @@ class TVMovieSelect(discord.ui.Select):
 
         env = await i.client.get_shared_api_tokens('tmdb')
         data = await fetch_multi(i.client, env['api_key'], item_id=value, media_type=mtype)
-        em1 = gen_movie_or_tvshow_embed(data)
+        em1 = await gen_movie_or_tvshow_embed(data, bot=i.client)
         self.view._cache[data.id] = self.view.current_item = data
         self.view._update_buttons()
         try:
@@ -319,15 +334,14 @@ class TVMovieView(discord.ui.View):
         self._cache: cachebox.Cache[int, MovieDetails | TVShowDetails] = cachebox.Cache(0)
         self._cache[source.id] = source
         self.current_item = source
-        self.cast_button = CastButton(label=f'Cast ({source.total_cast})')
-        self.crew_button = CrewButton(label=f'Crew ({source.total_crew})')
-        self.trailer_btn = TrailerButton(label=f'Trailers ({len(source.videos.results)})')
-        if source.cast:
-            self.add_item(self.cast_button)
-        if source.crew:
-            self.add_item(self.crew_button)
-        if source.videos.results:
-            self.add_item(self.trailer_btn)
+        self.cast_button = CastButton(label=f'Cast ({source.total_cast})', disabled=not source.cast)
+        self.crew_button = CrewButton(label=f'Crew ({source.total_crew})', disabled=not source.crew)
+        self.trailer_btn = TrailerButton(
+            label=f'Trailers ({len(source.videos.results)})', disabled=not source.videos.results
+        )
+        self.add_item(self.cast_button)
+        self.add_item(self.crew_button)
+        self.add_item(self.trailer_btn)
         #  self.add_item(TVMovieSelect(options=options, placeholder=placeholder))
 
     def _update_buttons(self):
@@ -366,6 +380,6 @@ class TVMovieView(discord.ui.View):
         self.stop()
 
     async def interaction_check(self, i: Interaction, /) -> bool:
-        await i.response.defer()
+        await i.response.defer(with_response=True)
         return True
 
